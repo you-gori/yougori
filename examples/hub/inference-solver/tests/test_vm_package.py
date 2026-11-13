@@ -117,6 +117,25 @@ class Declared(Fixture,unittest.TestCase):
                 self.assertEqual(self.finish(p,raw)['phase'],'failed')
                 self.assertFalse((self.root/'tool/link').exists() or (self.root/'other').exists())
 
+    def test_a_switch_puts_the_next_pack_in_the_place_of_the_one_before(self):
+        """The screen's /harness: with `replace`, another declaration once the pack before is whole."""
+        first=self.archive();p=Package(self.root,shared=True)
+        p.expect(self.declared(first));self.finish(p,first)
+        (self.root/'source').mkdir();(self.root/'source/LICENSE').write_text('MIT')
+        second=self.archive('tool/bin/next')
+        # Not while the pack before is still arriving, nor without a switch.
+        with self.assertRaises(ValueError):p.expect(self.declared(second,'kilo'))
+        self.assertEqual(p.expect(self.declared(second,'kilo'),replace=True),{'phase':'waiting','offset':0,'error':'','harness':'kilo'})
+        self.assertFalse((self.root/'tool').exists() or (self.root/'source').exists())
+        with self.assertRaisesRegex(ValueError,'still arriving'):p.expect(self.declared(first),replace=True)
+        self.assertEqual(self.finish(p,second)['phase'],'ready')
+        self.assertTrue((self.root/'tool/bin/next').is_file())
+        # Yougori's own agent needs no pack: the one before stays, unused, until another replaces it.
+        self.assertEqual(p.expect({'harness':'yougori'},replace=True)['phase'],'ready')
+        self.assertTrue((self.root/'tool/bin/next').is_file())
+        self.assertEqual(p.expect(self.declared(first),replace=True)['phase'],'waiting')
+        self.assertFalse((self.root/'tool').exists())
+
     def test_invalid_declarations_and_images_that_take_none_are_refused(self):
         p=Package(self.root,shared=True);digest='a'*64
         for bad in (None,[],{},{'harness':'Bad'},{'harness':'../x'},{'harness':'a'*33},{'harness':7},

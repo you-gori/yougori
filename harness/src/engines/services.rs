@@ -151,6 +151,7 @@ mod tests {
             answers: serde_json::Value::Null,
             reach: Default::default(),
             state_dir: dir.join("state"),
+            session: Default::default(),
         }
     }
 

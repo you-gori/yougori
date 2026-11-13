@@ -683,14 +683,14 @@ yougori tool publish [FOLDER] [--yes] [--publisher NAME]
 
 ```text
 yougori inference connect URL [--models REPO,REPO --sandbox none|CPU,GB,VMS] [--reconnect]   # run 1-3 of its models, Sandbox VMs or both
-yougori inference run [HARNESS] --server URL [--harness NAME] [--model ID] [--set ID=VALUE]... [--workspace PATH] [--internet MODE] [--sites A,B] [--targets A,B] [--cpu N] [--memory GB] [--yes]
+yougori inference run [HARNESS] --server URL [--harness NAME] [--model ID] [--set ID=VALUE]... [--workspace PATH] [--internet MODE] [--sites A,B] [--targets A,B] [--cpu N] [--memory GB] [--yes] [--no-browser]
 yougori inference install HARNESS --server URL   # prepare the images a run uses
 ```
 
 - `connect` starts Yougori; `--models` (`""`: none) with `--sandbox` answers it, and `--reconnect` asks for a new approval.
-- `run` asks the harness (Yougori's own agent first), model (signing in once), the harness's own questions, folder (a staged copy), reach (not for security), CPU and memory, then Start, and runs the harness inside the Yougori harness. Options skip their question; `--set ID=VALUE` answers the harness's own; secrets come only from `YOUGORI_SECRET_ID`; nothing goes after `--`. `--yes` (or no terminal) asks nothing: it needs HARNESS, `--model` if there are several and each required answer; folders, targets, secrets and permission take no default.
+- `run` starts Yougori's own agent (`/harness`, `/model` in chat switch); HARNESS or `--harness NAME` starts that one inside. It asks the model (signs in via browser), its own questions, folder (a staged copy), reach (not for security), CPU and memory, then Start. Options skip questions; `--set ID=VALUE` answers the harness's own; secrets come only from `YOUGORI_SECRET_ID`; nothing goes after `--`. `--yes` (or no terminal) asks nothing: it needs `--model` if there are several and each required answer; folders, targets, secrets and permission take no default.
 - MODE: `inference` (only the website; default), `sites` (also the `--sites`, over HTTPS), `targets` (also the `--targets`: `host:port`, a host for all ports, or a URL) or `full` (the public internet, never this computer or its network).
-- Security harnesses ask `target` (`practice`, an app inside the VM, or addresses), `permission` (yes, for an address), `off_limits`, `depth` (`look`, `safe`, `full`), `login_user` (password: YOUGORI_SECRET_LOGIN_PASSWORD), `source` (a folder) and `focus`, reach only the target and the website (no `--sites`, `--targets`, `--internet sites|full`) and return the report to the folder after review.
+- Security harnesses ask `target` (`practice`, an app inside the VM, or addresses), `permission` (yes, for an address), `off_limits`, `depth` (`look`, `safe`, `full`), `login_user` (password: YOUGORI_SECRET_LOGIN_PASSWORD), `source` (a folder) and `focus`, reach only the target and the website (no other reach options) and return the report to the folder after review.
 - Only the user answers permission or allows more than the website.
 
 ## Troubleshooting

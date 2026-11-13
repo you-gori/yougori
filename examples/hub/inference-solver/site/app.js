@@ -9,8 +9,8 @@ const PAGES = [...MAIN, "contribute", "connect", "keys", "usage", "admin"];
 const home = () => session?.choices?.home || "harnesses";
 const offeredHarnesses = () => harnesses.filter(h => h.offered !== false);
 // The Yougori harness holds every other harness here. The main page lists it alone; its page lists
-// the harnesses inside it that the administrator offers, grouped as `yougori inference run` asks for
-// them (coding, then security), each with its own command.
+// the harnesses inside it that the administrator offers, grouped as its /harness lists them (coding,
+// then security), each with its own command, which starts Yougori with that harness inside.
 const YOUGORI = "yougori";
 const inside = () => offeredHarnesses().filter(h => h.id !== YOUGORI);
 const yougori = () => harnesses.find(h => h.id === YOUGORI) || {id: YOUGORI, name: "Yougori", description: "", interface: "Terminal", source: "https://yougori.com"};
@@ -293,7 +293,7 @@ function fitColumns() {
 addEventListener("resize", fitColumns);
 const counted = (n, one, many) => `${n} ${n === 1 ? one : many}`;
 // Harnesses by category, in the catalogue's order (Coding, then Cyber Coding), each in the website's
-// order, as `yougori inference run` lists them.
+// order, as Yougori's /harness lists them.
 function grouped(list) {
   const ids = [...new Set([...categories.map(c => c.id), ...list.map(h => h.category)])];
   return ids.map(id => [id, list.filter(h => h.category === id)]).filter(([, members]) => members.length);
@@ -422,8 +422,8 @@ function renderYougori() {
   if (!held.length) return missing("harnesses", "This tool is not offered on this inference.");
   const own = y.offered !== false && startable(y), any = own || held.some(startable), command = installCommand(y.id), groups = grouped(held);
   const main = any
-    ? panel("Install and start", installSteps("The harness you choose", `Yougori asks which harness, ${own ? "its own agent or one of the ready ones below" : "from the ready ones below"}, then which model, then that harness's own questions. Before the VM starts, it asks what a coding harness may use: ${USES}. A security harness is not asked what it can reach: it reaches only its target and this inference.`, "The harness", command) + `<p class="hint">No API key to create or copy.</p>${models.some(ready) ? "" : NO_MODELS}`)
-      + againPanel(command, `Yougori asks its questions again each time. Each harness's Copy command below copies its own command, which starts the list on that harness. To ask nothing, add <code>--yes</code> to it, with <code>--model ID</code> when there is more than one model and the answers its page names. Add <code>--workspace "C:\\path\\to\\project"</code> to name the project folder. ${AGAIN_END}`)
+    ? panel("Install and start", installSteps("Yougori", `Yougori starts with its own agent: it asks which model, then what the VM may use: ${USES}. In its chat, <code>/harness</code> switches to any ready harness below and <code>/model</code> to another model. A security harness asks its own questions there and reaches only its target and this inference.`, "Yougori", command) + `<p class="hint">No API key to create or copy.</p>${models.some(ready) ? "" : NO_MODELS}`)
+      + againPanel(command, `Yougori asks its questions again each time. Each harness's Copy command below starts Yougori with that harness inside. To ask nothing, add <code>--yes</code> to it, with <code>--model ID</code> when there is more than one model and the answers its page names. Add <code>--workspace "C:\\path\\to\\project"</code> to name the project folder. ${AGAIN_END}`)
       + `<details class="install-details"><summary>Requirements and source</summary><p class="hint">${esc(REQUIREMENTS)} Each harness's page, linked from its name below, has its source setup.</p></details>`
     : panel("In preparation", `<div class="small-banner">No harness here is ready yet. Each one says why below.</div><p class="hint">There is no unrestricted fallback. A harness becomes available when it can run inside the same server-only boundary.</p>`);
   const inner = groups.map(([id, members]) => `<div id="group-${esc(id)}">${panel(named(CATEGORIES, id), (id === "security" ? `<p class="hint">${esc(SECURITY_NOTE)}</p>` : "") + `<div class="entries list inside">${members.map(insideRow).join("")}</div>`, `<span class="hint">${esc(counted(members.length, "harness", "harnesses"))}</span>`)}</div>`).join("");
@@ -451,7 +451,7 @@ function renderYougori() {
   restore("yougori", id => `[data-inside="${id}"]`);
 }
 // A harness's own page, which old links to it still open: as a model's, the steps beside the facts.
-// Its command starts Yougori's list of harnesses on this one.
+// Its command starts Yougori with this harness inside.
 function renderHarness(id) {
   if (id === YOUGORI) return renderYougori();
   const h = inside().find(h => h.id === id);
@@ -462,7 +462,7 @@ function renderHarness(id) {
     const install = installCommand(h.id), name = esc(h.name), needs = yesAnswers(h), source = workspaceOf(h);
     // --workspace answers the folder question, unless --yes already needs it.
     const folder = source?.required ? "" : ` Add <code>--workspace "C:\\path\\to\\project"</code> ${source ? `for the ${esc(questionWords(source))}` : security ? "to name the folder for the report" : "to name the project folder"}.`;
-    main = panel("Install and start", installSteps(h.name, `Yougori asks which harness, with ${name} already selected, then which model${h.questions?.length ? `, then ${name}'s own ${h.questions.length === 1 ? "question" : "questions"}` : ""}. ${uses(h, name)}`, h.name, install) + `<p class="hint">No API key to create or copy.${h.id==='shannon'?' Shannon opens its command prompt. Type check to verify the model connection, help for commands, or exit to close it.':''}</p>${security ? `<p class="hint">${esc(SECURITY_NOTE)}</p>` : ""}${models.some(ready) ? "" : NO_MODELS}`)
+    main = panel("Install and start", installSteps(h.name, `Yougori starts with ${name} inside: it asks which model${h.questions?.length ? `, then ${name}'s own ${h.questions.length === 1 ? "question" : "questions"}` : ""}. ${uses(h, name)} In its chat, <code>/harness</code> switches to another harness.`, h.name, install) + `<p class="hint">No API key to create or copy.${h.id==='shannon'?' Shannon opens its command prompt. Type check to verify the model connection, help for commands, or exit to close it.':''}</p>${security ? `<p class="hint">${esc(SECURITY_NOTE)}</p>` : ""}${models.some(ready) ? "" : NO_MODELS}`)
       + againPanel(install, `Yougori asks its questions again each time. To ask nothing, add <code>--yes</code> to keep the defaults, with <code>--model ID</code> when there is more than one model${needs.length ? `, and ${name}'s own ${needs.length === 1 ? "answer" : "answers"}: ${needs.join(", and ")}` : ""}.${folder} ${AGAIN_END}`)
         + `<details class="install-details"><summary>Requirements and source</summary><p class="hint">${esc(security ? REQUIREMENTS_SECURITY : REQUIREMENTS_CODING)}</p><a class="text-button" id="harness-download" href="/api/harness-download/${encodeURIComponent(h.id)}" download>Download source setup ↓</a></details>`;
   } else {

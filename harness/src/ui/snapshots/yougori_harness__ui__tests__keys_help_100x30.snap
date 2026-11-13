@@ -20,16 +20,16 @@ expression: wide
 │  ↑ ↓             earlier prompts at the first or last line
 │  esc             stop the turn
 │  ctrl+c          clear the box or stop; twice to quit
-│  ctrl+p          commands: model, mode, sessions, keys
+│  ctrl+p          commands: harness, model, mode, sessions, keys
 │  tab             next mode (when the box is empty)
-│  /               the engine's commands
+│  /               commands: Yougori's, then the harness's own
+│  /harness        switch to another harness (/harness NAME)
+│  /model          switch model (/model ID)
+│  /help           these keys and commands
+│  /exit           end the session
 │  pgup pgdn       scroll the conversation
 │  end             follow the newest output again
-│  ctrl+o          show or hide thinking and full output
-│  ctrl+l          redraw the screen
-│  ctrl+a ctrl+e   start or end of the line
-│  ctrl+u ctrl+k   delete to the start or end of the line
-│  ↑↓ more (1 of 16)
+│  ↑↓ more (1 of 20)
 └  esc close
  OpenCode · qwen3-coder-30b · 10% context · Build · reaches only the inference
 [no cursor]

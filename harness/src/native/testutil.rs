@@ -124,6 +124,7 @@ pub fn spec(url: &str, cwd: &std::path::Path, state: &std::path::Path) -> crate:
         answers: Value::Null,
         reach: Default::default(),
         state_dir: state.to_path_buf(),
+        session: Default::default(),
     }
 }
 

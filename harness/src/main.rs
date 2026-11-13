@@ -87,5 +87,6 @@ fn scripted_spec() -> spec::EngineSpec {
         answers: serde_json::Value::Null,
         reach: Default::default(),
         state_dir: std::env::temp_dir().join("yougori-harness"),
+        session: Default::default(),
     }
 }

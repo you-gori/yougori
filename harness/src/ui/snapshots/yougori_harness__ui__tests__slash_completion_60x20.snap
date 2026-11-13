@@ -12,11 +12,11 @@ expression: narrow
 
 
 
-
- › /new        Start a new session
-   /sessions   Open an earlier session
-   /compact    Summarise the conversation
-   /review     Review the changes · then type what to review
+ › /harness    switch to another harness · then type name
+   /model      switch model · then type id
+   /help       commands and keys
+   /exit       end the session
+   /quit       end the session
 ╭──────────────────────────────────────────────────────────╮
 │ › /                                                      │
 ╰──────────────────────────────────────────────────────────╯

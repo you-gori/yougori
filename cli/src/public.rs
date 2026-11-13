@@ -68,7 +68,7 @@ Public commands:
                                   Hub templates: whole setups as a folder; yougori template --help
   yougori tool new|check|add|list|remove|install|open|publish  Tools for sandboxes; yougori tool --help
   yougori inference connect URL   Choose compute to contribute and connect to an inference website
-  yougori inference run [HARNESS] --server URL    Choose a harness, a model and its setup; start it in a Sandbox VM
+  yougori inference run [HARNESS] --server URL    Choose a model and its setup; start Yougori in a Sandbox VM
   yougori inference install HARNESS --server URL  Prepare the images a run starts the harness from
   yougori grid contribute --server URL --join-file FILE --model-url URL --model MODEL
                                   Contribute an existing local model to a VM-hosted grid

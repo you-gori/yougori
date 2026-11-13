@@ -157,14 +157,20 @@ def verified(path, digest, size):
         return hashlib.file_digest(stream, "sha256").hexdigest() == digest
 
 
-def fetch(opener, url, path, digest, size, label):
+def printed(text):
+    print(text, flush=True)
+
+
+def fetch(opener, url, path, digest, size, label, say=printed, progress=None):
     """Makes `path` the file of this sha256 and size: kept when it already is, else downloaded from
     `url` and checked before it takes the name. Each download goes to a file of its own launch,
-    so launches fetching one file at the same time never write into each other's."""
+    so launches fetching one file at the same time never write into each other's. `say` shows
+    what it does (the terminal, or a switch's progress in the screen); `progress(done, size)` is
+    told each megabyte that arrives."""
     if verified(path, digest, size):
         return
     path.parent.mkdir(parents=True, exist_ok=True)
-    print("Downloading " + label + " (" + str(round(size / (1024 * 1024))) + " MB)...", flush=True)
+    say("Downloading " + label + " (" + str(round(size / (1024 * 1024))) + " MB)...")
     handle, name = tempfile.mkstemp(prefix=path.name + ".", suffix=".partial", dir=path.parent)
     temporary = Path(name)
     try:
@@ -176,6 +182,8 @@ def fetch(opener, url, path, digest, size, label):
                     raise ValueError("The download of the " + label + " exceeded its declared size.")
                 sha.update(block)
                 output.write(block)
+                if progress is not None:
+                    progress(total, size)
         if total != size or sha.hexdigest() != digest:
             raise ValueError("The download of the " + label + " did not match its checksum.")
         try:
@@ -326,6 +334,184 @@ def install_yougori(held, server, root):
     return identity, declaration, pack["memory"]
 
 
+def switch_list(server, held, memory, known, opener=None):
+    """What a Yougori harness session gets at /start to switch harness from its screen (/harness):
+    the website's harnesses (GET /api/harnesses) that it offers, that start inside the Yougori
+    harness here and that this launcher knows (`known`), Yougori's own agent first, then the coding
+    and the security ones, each with its questions, the base it starts on and its memory (the Yougori
+    harness's image listing); the base this VM starts on (that of `held`), its `memory` and the
+    website's address. {} when the website lists none, or cannot be read: the screen then says
+    switching is not offered."""
+    opener = opener or transport_opener()
+    try:
+        catalog = published(opener, server + "/api/harnesses", 1 << 20, "")
+        listing = published(opener, server + "/api/harness-image/" + YOUGORI, LISTING_BYTES, "")
+        vm_base = yougori_pack(listing, held)[0]["base"]
+    except ValueError:
+        return {}
+    entries = []
+    for item in catalog.get("harnesses") or []:
+        if not isinstance(item, dict) or not isinstance(item.get("id"), str) or item["id"] not in known:
+            continue
+        if item.get("offered") is False or not isinstance(item.get("held"), dict):
+            continue
+        try:
+            pack = yougori_pack(listing, item["id"])[0]
+        except ValueError:
+            continue
+        questions = item.get("questions") if isinstance(item.get("questions"), list) else []
+        reason = item["held"].get("reason")
+        entries.append({"id": item["id"], "name": plain(item.get("name") or item["id"], 80),
+                        "category": "security" if item.get("category") == "security" else "coding",
+                        "description": plain(item.get("description") or "", 600) if isinstance(item.get("description"), str) else "",
+                        "questions": questions[:32], "base": pack["base"], "memory": pack["memory"],
+                        "ready": item["held"].get("available") is True,
+                        "reason": plain(reason, 300) if isinstance(reason, str) else ""})
+    entries.sort(key=lambda entry: (entry["id"] != YOUGORI, entry["category"] == "security"))
+    if not any(entry["id"] == YOUGORI for entry in entries):
+        return {}
+    fields = {"harnesses": entries, "vm_base": vm_base, "vm_memory": memory, "server": server}
+    # The VM takes at most 96 KiB of them: the descriptions go first, then the list does.
+    if len(json.dumps(fields)) > 90 * 1024:
+        for entry in entries:
+            entry["description"] = ""
+    return fields if len(json.dumps(fields)) <= 90 * 1024 else {}
+
+
+class Cancelled(ValueError):
+    """The screen stopped waiting for a switch (Esc)."""
+
+
+class Relaunch:
+    """A session that ended so the next harness starts in a new VM (the screen's /harness, a new-VM
+    switch): the request the screen made, with its secrets, kept in memory only."""
+
+    def __init__(self, request):
+        self.request = request
+
+
+def switch_in_place(control, request, entries, vm_base, server, images, opener=None):
+    """Brings the harness the screen switched to into the running VM (runs on a thread of its own,
+    so the screen stays live): checked against the session's list and the VM's base, its pack
+    downloaded into `images` and delivered as at the start, its progress shown in the screen. The VM
+    is told it is done, or why it failed."""
+    identity, harness = request["id"], request["harness"]
+    entry = entries.get(harness)
+    name = entry["name"] if entry else harness
+    last = [0.0]
+
+    def say(text, every=0.0):
+        now = time.monotonic()
+        if now - last[0] < every:
+            return
+        last[0] = now
+        try:
+            reply = control.post("/switch/progress", {"id": identity, "text": text})
+        except (OSError, ValueError, http.client.HTTPException):
+            return
+        if reply.get("cancelled"):
+            raise Cancelled("Cancelled.")
+
+    try:
+        if entry is None:
+            raise ValueError("This inference does not offer " + name + " here.")
+        if not entry["ready"]:
+            raise ValueError(entry["reason"] or name + " cannot start here yet.")
+        opener = opener or transport_opener()
+        listing = published(opener, server + "/api/harness-image/" + YOUGORI, LISTING_BYTES,
+                            "This server has not prepared the Yougori harness's VM images yet.")
+        pack, _ = yougori_pack(listing, harness)
+        if pack["base"] != vm_base:
+            raise ValueError(name + " needs a new VM. Choose it again in /harness to start one.")
+        declaration = {"harness": harness}
+        if harness != YOUGORI:
+            mb = lambda count: str(round(count / (1024 * 1024)))
+            fetch(opener, artifact_base(server, listing) + "/" + YOUGORI + "/" + pack["sha256"] + "/tool",
+                  images / "tools" / (pack["sha256"] + ".tar.gz"), pack["sha256"], pack["bytes"], name + "'s files", say=say,
+                  progress=lambda done, size: say("Downloading " + name + ": " + str(done * 100 // size) + "% (" + mb(done)
+                                                  + " of " + mb(size) + " MB)", every=0.5))
+            declaration.update(sha256=pack["sha256"], bytes=pack["bytes"])
+        prepare_tool(control, images, declaration, say=lambda text: say(text.replace("Preparing tool", "Installing " + name)))
+        control.post("/switch/done", {"id": identity})
+    except (ValueError, OSError, http.client.HTTPException) as error:
+        reason = plain(str(error)) or name + " could not be started."
+        try:
+            control.post("/switch/failed", {"id": identity, "reason": reason})
+        except (OSError, ValueError, http.client.HTTPException):
+            pass
+
+
+# The screen's exit code once a new-VM switch is accepted: the run goes on in a new VM.
+RELAUNCH_EXIT = 75
+
+
+def take_switch(control, request, entries, vm_base, memory, server, images):
+    """A switch the screen asked for, as the VM passes it on (/poll). In place: brought into this VM
+    on a thread of its own (switch_in_place). A new VM: checked against the session's list and
+    accepted; the Relaunch the session ends with once the screen exits RELAUNCH_EXIT, with the
+    harness's name, kind and memory. None otherwise."""
+    identity, harness = request.get("id"), request.get("harness")
+    if not isinstance(identity, str) or not isinstance(harness, str):
+        return None
+    if request.get("mode") == "in-place":
+        threading.Thread(target=switch_in_place, args=(control, request, entries, vm_base, server, images), daemon=True).start()
+        return None
+    entry = entries.get(harness)
+    reason = ("This inference does not offer " + harness + " here." if entry is None
+              else "" if entry["ready"] else entry["reason"] or entry["name"] + " cannot start here yet.")
+    try:
+        if reason:
+            control.post("/switch/failed", {"id": identity, "reason": reason})
+            return None
+        control.post("/switch/accepted", {"id": identity})
+    except (OSError, ValueError, http.client.HTTPException):
+        return None
+    wanted = request.get("memory") if type(request.get("memory")) is int else 0
+    return Relaunch({**request, "name": entry["name"], "category": entry["category"],
+                     "memory": max(wanted, entry["memory"], 1)})
+
+
+def run_session(name, server, key_file, model, workspace, interactive=True, cpu=None, memory=None, internet=False,
+                sites=None, targets=None, answers=None, secrets=None, images=None, catalog=None, known=None, ask=input):
+    """A Yougori harness session holding `name`, through every new VM its screen switches to: each
+    one ends the VM before (its copy with changes kept for review) and starts the next with the same
+    model, folder and CPU, the next harness's answers and secrets, and memory enough for it. A
+    security harness reaches only its targets and this inference; when they go beyond what this run
+    already held, the person confirms them here, on their own terminal, never in the VM. A coding
+    harness keeps the run's reach. The review lines of every VM come at the end. The exit code."""
+    reviews, held, chosen = [], set(targets or []), memory
+    try:
+        while True:
+            result = launch(name, server, key_file, model, workspace, [], interactive, cpu=cpu, memory=memory,
+                            internet=internet, sites=sites, targets=targets, harness=name, answers=answers, secrets=secrets,
+                            images=images, catalog=catalog, known=known, reviews=reviews)
+            if not isinstance(result, Relaunch):
+                return result
+            request = result.request
+            label, wanted = request["name"], [t for t in request.get("targets") or [] if isinstance(t, str)]
+            if request["category"] == "security":
+                wider = [target for target in wanted if target not in held]
+                if wider:
+                    question = ("Start " + label + " in a new VM that reaches only " + shown_targets(wanted)
+                                + " and this inference? [y/N] ")
+                    if not (interactive and sys.stdin.isatty()):
+                        print("\n" + label + " needs a new VM that reaches " + shown_targets(wanted)
+                              + ", and only the person at this terminal can allow that. Nothing more was started.", flush=True)
+                        return 0
+                    if ask("\n" + question).strip().lower() not in ("y", "yes"):
+                        print("Nothing more was started.", flush=True)
+                        return 0
+                    held.update(wanted)
+                internet, sites, targets = False, None, wanted or None
+            name, answers, secrets = request["harness"], request.get("answers") or {}, request.get("secrets") or {}
+            memory = max(chosen or 0, request["memory"])
+            print("\nStarting " + label + " in a new VM...", flush=True)
+    finally:
+        if reviews:
+            print("\nYour original project is unchanged. Review the VM " + ("copies" if len(reviews) > 1 else "copy")
+                  + " with:\n" + "\n".join(reviews), flush=True)
+
+
 class Refused(ValueError):
     """The VM refused a request for a reason that asking again cannot change (HTTP 409)."""
 
@@ -333,6 +519,31 @@ class Refused(ValueError):
 class Ended(ValueError):
     """What a message was for has ended in the VM (HTTP 410): a model request its client left or
     stopped waiting for, or a tunnel that closed. Nothing more goes to it."""
+
+
+class Unreached(OSError):
+    """A control request whose connection to the VM's publication never opened: nothing of it
+    reached the VM, so sending it again is safe."""
+
+
+# How long a control connection may take to open, and how long a session keeps asking again when
+# the publication takes none (seen while a switch's pack moved beside the session's own requests).
+CONNECT_SECONDS = 10
+UNREACHED_SECONDS = 120
+
+
+def again(post, path, data, done=None, seconds=UNREACHED_SECONDS):
+    """`post(path, data)`, asked again while its connection does not open, for up to `seconds` in
+    all (and not once the session is `done`)."""
+    first = None
+    while True:
+        try:
+            return post(path, data)
+        except Unreached:
+            first = first or time.monotonic()
+            if time.monotonic() - first > seconds or (done is not None and done.is_set()):
+                raise
+            time.sleep(.5)
 
 
 class Control:
@@ -346,8 +557,13 @@ class Control:
             raise ValueError("Invalid publication identity.")
 
     def post(self, path, data):
-        connection = http.client.HTTPConnection("127.0.0.1", self.port, timeout=35)
+        connection = http.client.HTTPConnection("127.0.0.1", self.port, timeout=CONNECT_SECONDS)
         try:
+            try:
+                connection.connect()
+            except OSError as error:
+                raise Unreached(str(error)) from error
+            connection.sock.settimeout(35)
             connection.request("POST", path, body=json.dumps(data).encode(), headers={
                 "Authorization": "Bearer " + self.token, "Content-Type": "application/json"})
             response = connection.getresponse()
@@ -388,15 +604,17 @@ def declare(control, declaration, status):
     return status
 
 
-def prepare_tool(control,root,declaration=None):
+def prepare_tool(control,root,declaration=None,say=printed):
     """Delivers the harness's tool package from root/tools into the VM through its private control
     connection, and waits until the VM has checked and unpacked it. An image made for one harness
     pins its package (root/tool-package.json, written by install). The Yougori harness's base pins
     none: with `declaration` (install_yougori), the VM is first told which harness's pack to
-    expect, with its hash and size, or that the harness needs none."""
+    expect, with its hash and size, or that the harness needs none. During a session, a switch
+    declares the next harness's pack the same way, and the VM puts it in the place of the one
+    installed. `say` shows the progress (the terminal, or the screen during a switch)."""
     spec=declaration if declaration is not None else json.loads((root/'tool-package.json').read_text())
     if not spec: return
-    if spec.get('sha256'): print('Preparing the tool inside your VM...',flush=True)
+    if spec.get('sha256'): say('Preparing the tool inside your VM...')
     deadline=time.monotonic()+1800
     status=None
     while time.monotonic()<deadline:
@@ -432,7 +650,7 @@ def prepare_tool(control,root,declaration=None):
                 progress=offset*100//spec['bytes']
                 if progress>=reported+5 or time.monotonic()-last_report>=10 or offset==spec['bytes']:
                     reported=progress;last_report=time.monotonic()
-                    print('Preparing tool: '+str(progress)+'% ('+str(offset//(1024*1024))+'/'+str(spec['bytes']//(1024*1024))+' MB)',flush=True)
+                    say('Preparing tool: '+str(progress)+'% ('+str(offset//(1024*1024))+'/'+str(spec['bytes']//(1024*1024))+' MB)')
         control.post('/package/finish',{})
     while time.monotonic()<deadline:
         status=control.post('/package/status',{})
@@ -640,7 +858,7 @@ def terminal_input(control, done, keys=None):
                         done.set()
                         return
                     if text:
-                        control.post("/input", {"data": base64.b64encode(text.encode()).decode()})
+                        again(control.post, "/input", {"data": base64.b64encode(text.encode()).decode()}, done)
             finally:
                 shift_tab.close()
         else:
@@ -651,7 +869,7 @@ def terminal_input(control, done, keys=None):
                     if not raw or b"\x1d" in raw:
                         done.set()
                         return
-                    control.post("/input", {"data": base64.b64encode(raw).decode()})
+                    again(control.post, "/input", {"data": base64.b64encode(raw).decode()}, done)
     except (OSError, ValueError, http.client.HTTPException):
         done.set()
 
@@ -823,10 +1041,11 @@ def tidy_earlier(root):
         remembered(root, lambda current: [item for item in current if item["sandbox"] not in done])
 
 
-def finish(sandbox, workspace, root):
+def finish(sandbox, workspace, root, reviews=None):
     """After a session: stops its VM and tidies it, so a run leaves no VM behind in the app, only a
     copy with changes to review. The review line comes whenever a copy may hold changes, even when
-    a step fails, and a VM that could not be stopped is named with the command that stops it."""
+    a step fails (into `reviews` when given: a run that goes on in a new VM shows them all at its
+    end), and a VM that could not be stopped is named with the command that stops it."""
     kept = bool(workspace)
     try:
         try:
@@ -842,8 +1061,11 @@ def finish(sandbox, workspace, root):
                 pass
     finally:
         if kept:
-            print("\nYour original project is unchanged. Review the VM copy with:\n"
-                  + "yougori sandbox review " + sandbox, flush=True)
+            line = "yougori sandbox review " + sandbox
+            if reviews is not None:
+                reviews.append(line)
+            else:
+                print("\nYour original project is unchanged. Review the VM copy with:\n" + line, flush=True)
 
 
 def launch_params(name, identity, workspace, cpu=None, memory=None, internet=False, targets=None):
@@ -1100,7 +1322,7 @@ class Relay:
         for the request (its client left)."""
         if self.done.is_set():
             raise Ended("The session ended.")
-        self.control.post("/response", {**value, "id": request_id})
+        again(self.control.post, "/response", {**value, "id": request_id}, self.done)
 
     def forward(self, request):
         with self.places:
@@ -1124,18 +1346,22 @@ class Relay:
 
 
 def launch(name, server, key_file, model, workspace, arguments, interactive=True, cpu=None, memory=None, internet=False,
-           sites=None, targets=None, harness=None, answers=None, secrets=None, images=None, catalog=None):
+           sites=None, targets=None, harness=None, answers=None, secrets=None, images=None, catalog=None, known=None,
+           reviews=None):
     """Starts `name`'s VM image and its harness in this terminal. With `harness` (the Yougori
     harness, holding `name`), the VM starts on the Yougori harness's base with that harness's pack
     (both kept in `images`, the folder every harness Yougori holds shares; by default the key's)
-    and gets the setup `answers`, the `secrets` and the reach. With `targets`, Yougori holds the
+    and gets the setup `answers`, the `secrets` and the reach; with `known` (the harnesses this
+    launcher knows), also the harnesses its screen may switch to (/harness, switch_list): one that
+    starts on this VM's base comes into it (switch_in_place), any other ends this session, which
+    returns a Relaunch for the next VM. With `targets`, Yougori holds the
     VM's network card to those hosts' addresses and ports alone (and answers its DNS for them
     alone, and checks the site each HTTPS and HTTP connection to a named host's addresses asks
     for); with `sites` as well, both apply. With `internet`, a Yougori with the filter holds the
     card to the public internet; the person is told what an older one gives. `catalog`
     (solver.models) reads the website's live catalog again once the images are ready: a model it
     no longer lists is refused by name before the VM starts. Whatever ends the session, the
-    person's terminal is left as it was."""
+    person's terminal is left as it was. `reviews` collects the review line instead of printing it."""
     filtered = False
     if targets:
         if internet:
@@ -1148,10 +1374,15 @@ def launch(name, server, key_file, model, workspace, arguments, interactive=True
     fields = session(harness, answers, secrets, internet, sites, targets) if harness else None
     root = key_file.parent
     declaration = None
+    switching, entries = {}, {}
     if harness:
         store = images or root
         identity, declaration, standard = install_yougori(harness, server, store)
         memory = memory or standard
+        if known:
+            switching = switch_list(server, harness, memory, known)
+            entries = {entry["id"]: entry for entry in switching.get("harnesses", [])}
+            fields.update(switching)
     else:
         store = root
         identity = install(name, server, root)
@@ -1259,8 +1490,9 @@ def launch(name, server, key_file, model, workspace, arguments, interactive=True
                 keys = ConsoleKeys()
                 keys.take()
             threading.Thread(target=terminal_input, args=(control, done, keys), daemon=True).start()
+        relaunch = None
         while not done.is_set():
-            packet = control.post("/poll", {})
+            packet = again(control.post, "/poll", {}, done)
             output = base64.b64decode(packet.get("output", ""), validate=True)
             if output:
                 screen.feed(output)
@@ -1274,8 +1506,13 @@ def launch(name, server, key_file, model, workspace, arguments, interactive=True
                 if tunnels is None:
                     raise ValueError("The VM opened a tunnel this session did not allow.")
                 tunnels.handle(event)
+            request = packet.get("switch")
+            if isinstance(request, dict) and switching:
+                relaunch = take_switch(control, request, entries, switching["vm_base"], memory, server, store) or relaunch
             if packet.get("exit") is not None:
                 ended = True
+                if relaunch is not None and int(packet["exit"]) == RELAUNCH_EXIT:
+                    return relaunch
                 return int(packet["exit"])
             current = shutil.get_terminal_size((100, 30))
             if current != size:
@@ -1309,6 +1546,6 @@ def launch(name, server, key_file, model, workspace, arguments, interactive=True
                 except (OSError, ValueError, http.client.HTTPException):
                     pass
             if sandbox:
-                finish(sandbox, workspace, root)
+                finish(sandbox, workspace, root, reviews)
         finally:
             keyboard.restore()

@@ -1,5 +1,6 @@
 ---
 source: src/ui/tests.rs
+assertion_line: 858
 expression: text
 ---
  Yougori  Aider · qwen3-coder-30b                                                    running 1m 15s
@@ -31,5 +32,5 @@ Applied edit to app.py
 
 
 
- reaches only the inference · ctrl+p commands · shift+pgup scroll back
+ reaches only the inference · ctrl+p harness, model · shift+pgup scroll back
 [no cursor]

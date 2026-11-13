@@ -29,7 +29,7 @@ expression: wide
 
 ◆  Commands
 │  › comp
-│  ● Compact       /compact
+│  ● Compact         /compact
 └  ↑↓ move · enter run · esc close
  OpenCode · qwen3-coder-30b · 10% context · Build · reaches only the inference
 [cursor 9,26]

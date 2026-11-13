@@ -2,10 +2,11 @@
 //! the header line (Yougori, the harness, the model), the client's screen, and the status line
 //! (what the VM reaches, the keys). The client runs in a pseudo-terminal sized to the pane; its
 //! output is parsed into a screen (vt100) and drawn with its colours; every key and paste goes to
-//! it except Ctrl+P, which opens the palette (switch model, send Ctrl+P, keys, quit).
+//! it except Ctrl+P, which opens the palette (switch harness or model, send Ctrl+P, keys, quit).
 use super::draw::{Frame, ScrollRegion};
 use super::mask::Masker;
 use super::overlay::{Action, Choice, Confirmable, Item, Outcome, Overlay, Which};
+use super::switcher::{Flow, FlowOutcome, Mode as Where, Pending};
 use super::text::{self, pad, span, truncate_spans, wrap_text};
 use super::theme::{self, clock, Depth, Theme, BLUE, SKY};
 use crate::spec::EngineSpec;
@@ -273,6 +274,8 @@ pub enum PanePhase {
     Starting { since: Instant },
     Running { since: Instant },
     Switching { model: String, since: Instant, step: String },
+    /// Switching harness (/harness): `step` is the switch's latest progress.
+    Changing { name: String, since: Instant, step: String },
     Ended { message: String, failed: bool },
     Quitting { since: Instant },
 }
@@ -281,6 +284,10 @@ pub enum PanePhase {
 pub enum PaneEffect {
     Start,
     Restart(String),
+    /// Switch harness (/harness): in place the client stops first, then the switch command runs.
+    Switch(Box<Pending>),
+    /// Esc while switching harness: the switch command is asked to stop.
+    CancelSwitch,
     Redraw,
     Quit,
 }
@@ -306,6 +313,11 @@ pub struct Pane {
     /// While a model switch is prepared: what the pane goes back to if the new model cannot be
     /// prepared (how it was, or the client's end when the client ended meanwhile).
     pub switch_from: Option<PanePhase>,
+    /// The harness switch under way, and what the pane goes back to when a new VM's switch fails.
+    pub change: Option<Box<Pending>>,
+    pub change_from: Option<PanePhase>,
+    /// What the screen before this one handed on (its conversation), for the screen after it.
+    pub kept: super::Carry,
 }
 
 fn parser(rows: u16, cols: u16) -> vt100::Parser<Replies> {
@@ -340,6 +352,9 @@ impl Pane {
             dirty: true,
             models,
             switch_from: None,
+            change: None,
+            change_from: None,
+            kept: super::Carry::default(),
         }
     }
 
@@ -348,7 +363,10 @@ impl Pane {
     }
 
     pub fn animating(&self) -> bool {
-        matches!(self.phase, PanePhase::Starting { .. } | PanePhase::Switching { .. } | PanePhase::Quitting { .. })
+        matches!(
+            self.phase,
+            PanePhase::Starting { .. } | PanePhase::Switching { .. } | PanePhase::Changing { .. } | PanePhase::Quitting { .. }
+        )
     }
 
     /// The note while it still shows.
@@ -423,6 +441,67 @@ impl Pane {
         self.dirty = true;
     }
 
+    /// Opens the /harness panel (Ctrl+P, Switch harness). Not while the client starts or switches.
+    pub fn open_harness(&mut self, now: Instant) {
+        self.overlay = None;
+        if !self.switchable() {
+            self.note = Some((format!("Wait until {} has started to switch harness.", self.spec.name), now));
+            self.dirty = true;
+            return;
+        }
+        match Flow::open(&self.spec, &self.spec.model, None) {
+            Ok((_, FlowOutcome::Start(pending))) => self.start_switch(*pending, now),
+            Ok((flow, _)) => self.overlay = Some(Overlay::Switch(Box::new(flow))),
+            Err(error) => self.note = Some((error, now)),
+        }
+        self.dirty = true;
+    }
+
+    /// The switch starts: in place the client stops for it; a new VM's switch leaves it running
+    /// until the launcher takes over. Secrets typed for the next harness stay in this process.
+    pub fn start_switch(&mut self, pending: Pending, now: Instant) {
+        self.overlay = None;
+        for (id, value) in &pending.secrets {
+            crate::spec::remember_secret(id, value);
+        }
+        let in_place = pending.mode == Where::InPlace;
+        self.change_from = Some(self.phase.clone());
+        let step = if in_place { format!("stopping {}", self.spec.name) } else { "asking for a new VM".into() };
+        self.phase = PanePhase::Changing { name: pending.entry.name.clone(), since: now, step };
+        self.change = Some(Box::new(pending.clone()));
+        self.effects.push(PaneEffect::Switch(Box::new(pending)));
+        self.dirty = true;
+    }
+
+    /// The switch's latest progress.
+    pub fn change_step(&mut self, step: &str) {
+        if let PanePhase::Changing { step: current, .. } = &mut self.phase {
+            *current = step.to_owned();
+        }
+        self.dirty = true;
+    }
+
+    /// The switch failed: the reason shows in the status line. A new VM's switch goes back to how
+    /// it was (the client kept running); in place, the run loop starts the harness before again,
+    /// or Yougori's own agent when it is gone. Whether it was in place.
+    pub fn change_failed(&mut self, reason: &str, now: Instant) -> bool {
+        let pending = self.change.take();
+        let name = pending.as_ref().map_or_else(|| "the harness".to_owned(), |p| p.entry.name.clone());
+        let in_place = pending.as_ref().is_none_or(|p| p.mode == Where::InPlace);
+        let before = self.change_from.take();
+        if in_place {
+            self.phase = PanePhase::Starting { since: now };
+        } else if matches!(self.phase, PanePhase::Changing { .. }) {
+            self.phase = match before {
+                Some(phase @ (PanePhase::Running { .. } | PanePhase::Ended { .. })) if self.child.is_some() || matches!(phase, PanePhase::Ended { .. }) => phase,
+                _ => PanePhase::Ended { message: format!("{} ended.", self.spec.name), failed: false },
+            };
+        }
+        self.note = Some((format!("Could not switch to {name}: {}", text::clean(reason).trim()), now));
+        self.dirty = true;
+        in_place
+    }
+
     /// A model was chosen while the client starts or another switch runs: it is not taken.
     pub fn wait_to_switch(&mut self, now: Instant) {
         self.note = Some((format!("Wait until {} has started to switch models.", self.spec.name), now));
@@ -468,7 +547,9 @@ impl Pane {
                 };
                 self.child = None;
                 match self.phase {
-                    PanePhase::Quitting { .. } => return,
+                    // The client stopped for a harness switch, or ended while a new VM is asked
+                    // for: the switch says what happens next.
+                    PanePhase::Quitting { .. } | PanePhase::Changing { .. } => return,
                     // The client ended while a new model is prepared: the switch goes on, and
                     // if it fails the pane shows this end instead of a client that is gone.
                     PanePhase::Switching { .. } => {
@@ -489,7 +570,15 @@ impl Pane {
 
     fn palette(&self) -> Vec<Item> {
         let name = &self.spec.name;
+        let switchable = self.spec.session.switchable();
         let mut items = vec![
+            Item {
+                action: Action::Harness,
+                label: "Switch harness".into(),
+                hint: if switchable { name.clone() } else { "needs a newer Yougori".into() },
+                // Not while the client starts or switches: wait for it.
+                enabled: switchable && self.switchable(),
+            },
             Item {
                 action: Action::Model,
                 label: "Switch model".into(),
@@ -523,7 +612,7 @@ impl Pane {
     fn keys_help(&self) -> Vec<(String, String)> {
         let name = &self.spec.name;
         vec![
-            ("ctrl+p".into(), "Yougori's commands: model, keys, quit".into()),
+            ("ctrl+p".into(), "Yougori's commands: harness, model, keys, quit".into()),
             ("shift+pgup".into(), format!("scroll back through {name}'s output")),
             ("shift+pgdn".into(), "scroll forward again".into()),
             ("other keys".into(), format!("go to {name}")),
@@ -543,6 +632,7 @@ impl Pane {
             Outcome::Run(action) => {
                 self.overlay = None;
                 match action {
+                    Action::Harness => self.open_harness(now),
                     Action::Model => {
                         let choices = self
                             .models
@@ -598,6 +688,7 @@ impl Pane {
                 self.overlay = None;
                 self.effects.push(PaneEffect::Restart(model));
             }
+            Outcome::Switch(pending) => self.start_switch(*pending, now),
         }
     }
 
@@ -632,6 +723,13 @@ impl Pane {
         }
         if control && matches!(key.code, KeyCode::Char('p') | KeyCode::Char('P')) {
             self.overlay = Some(Overlay::palette(self.palette()));
+            return;
+        }
+        if let PanePhase::Changing { .. } = self.phase {
+            // No client takes keys while the harness switches: Esc stops the switch.
+            if key.code == KeyCode::Esc || (control && key.code == KeyCode::Char('c')) {
+                self.effects.push(PaneEffect::CancelSwitch);
+            }
             return;
         }
         let rows = usize::from(self.parser.screen().size().0.get());
@@ -670,7 +768,8 @@ impl Pane {
 
     pub fn paste(&mut self, text: &str) {
         self.dirty = true;
-        if self.overlay.is_some() {
+        if let Some(overlay) = self.overlay.as_mut() {
+            overlay.paste(text);
             return;
         }
         if let Some(child) = &self.child {
@@ -725,6 +824,10 @@ impl Pane {
             PanePhase::Switching { model, step, .. } => {
                 vec![spinner(), span(format!(" switching to {model}: {}", step.to_lowercase()), theme.muted())]
             }
+            PanePhase::Changing { name, since, .. } => vec![
+                spinner(),
+                span(format!(" switching to {name} {}", clock(now.saturating_duration_since(*since))), theme.muted()),
+            ],
             PanePhase::Ended { failed, .. } => vec![span(
                 if *failed { "■ ended" } else { "◇ ended" },
                 if *failed { theme.bad() } else { theme.good() },
@@ -785,6 +888,7 @@ impl Pane {
             PanePhase::Switching { model, .. } if empty => {
                 Some((format!("Starting {} with {model}…", self.spec.name), theme.muted()))
             }
+            PanePhase::Changing { name, step, .. } => Some((format!("Switching to {name}: {step}"), theme.muted())),
             PanePhase::Ended { message, failed } if empty => {
                 Some((message.clone(), if *failed { theme.bad() } else { theme.muted() }))
             }
@@ -824,8 +928,10 @@ impl Pane {
                     spans.push(span(self.masker.mask(note).into_owned(), theme.warn()));
                 } else if self.scrollback > 0 {
                     spans.push(span(format!("{} rows back · shift+pgdn returns", self.scrollback), theme.warn()));
+                } else if let PanePhase::Changing { .. } = self.phase {
+                    spans.push(span("switching harness · esc to stop", theme.muted()));
                 } else {
-                    spans.push(span("ctrl+p commands · shift+pgup scroll back", theme.muted()));
+                    spans.push(span("ctrl+p harness, model · shift+pgup scroll back", theme.muted()));
                 }
                 spans
             }

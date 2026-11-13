@@ -16,6 +16,7 @@ mod overlay;
 mod pane;
 mod screen;
 mod state;
+mod switcher;
 mod term;
 #[cfg(test)]
 mod tests;
@@ -34,9 +35,12 @@ use ratatui::buffer::Buffer;
 use ratatui::layout::Rect;
 use screen::Screen;
 use state::{App, Effect, Phase};
+use std::collections::VecDeque;
 use std::time::{Duration, Instant};
+use switcher::{Mode as Where, Pending, Switched, NEW_VM_EXIT, YOUGORI};
 use term::Terminal;
 use theme::{Depth, Theme};
+use tokio::sync::{mpsc, oneshot};
 
 /// The shortest time between two frames (about 30 a second).
 const FRAME: Duration = Duration::from_millis(33);
@@ -49,23 +53,64 @@ const SWITCH_WAIT: Duration = Duration::from_secs(10);
 /// Engine events taken in one go before the screen looks at keys again.
 const BATCH: usize = 512;
 
+/// How a screen ended: the session is over (its exit code), or the person switched harness and
+/// the next harness's screen takes over (/harness).
+pub enum Ended {
+    Exit(i32),
+    Switch(Box<EngineSpec>, Box<Carry>),
+}
+
+/// What the next screen keeps of the one before after a switch: the conversation so far, the
+/// prompts sent and queued, and the divider it starts under ("OpenCode · gemma-4").
+#[derive(Default)]
+pub struct Carry {
+    pub transcript: Option<transcript::Transcript>,
+    pub history: input::History,
+    pub queued: VecDeque<String>,
+    pub note: String,
+}
+
 /// Runs the screen until the person quits; returns the process exit code (0 after a normal
-/// quit, 1 when the engine failed). With `engine` None the screen starts the spec's engine
-/// itself (`crate::engines::start`), shows its start-up and errors, and restarts it to switch
-/// models (`crate::engines::respec`); a `Protocol::Terminal` harness runs in the terminal pane.
+/// quit, 1 when the engine failed, [`NEW_VM_EXIT`] when the next harness starts in a new VM).
+/// With `engine` None the screen starts the spec's engine itself (`crate::engines::start`), shows
+/// its start-up and errors, restarts it to switch models (`crate::engines::respec`) and switches
+/// harness (switcher.rs); a `Protocol::Terminal` harness runs in the terminal pane. A switch goes
+/// on in the same terminal: the next harness's screen, conversation or pane, takes over.
 pub async fn run(spec: EngineSpec, engine: Option<EngineHandle>) -> anyhow::Result<i32> {
     let theme = Theme::new(Depth::detect());
-    let masker = Masker::from_environment();
     highlight::warm();
     let mut terminal =
         Terminal::enter().map_err(|e| anyhow::anyhow!("The screen needs an interactive terminal: {e}"))?;
-    let result = if spec.protocol == Protocol::Terminal && engine.is_none() {
-        run_pane(&mut terminal, spec, theme, masker).await
-    } else {
-        run_agent(&mut terminal, spec, engine, theme, masker).await
+    let mut spec = spec;
+    let mut engine = engine;
+    let mut carry = Carry::default();
+    let result = loop {
+        // Secrets typed for the harness switched to are masked from its first frame.
+        let masker = Masker::from_environment();
+        let ended = if spec.protocol == Protocol::Terminal && engine.is_none() {
+            run_pane(&mut terminal, spec, theme, masker, std::mem::take(&mut carry)).await
+        } else {
+            run_agent(&mut terminal, spec, engine.take(), theme, masker, std::mem::take(&mut carry)).await
+        };
+        match ended {
+            Ok(Ended::Exit(code)) => break Ok(code),
+            Ok(Ended::Switch(next, kept)) => {
+                spec = *next;
+                carry = *kept;
+            }
+            Err(error) => break Err(error),
+        }
     };
     drop(terminal);
     result
+}
+
+/// The next progress line of the harness switch under way, if any.
+async fn next_progress(progress: &mut Option<mpsc::UnboundedReceiver<String>>) -> Option<String> {
+    match progress {
+        Some(receiver) => receiver.recv().await,
+        None => std::future::pending().await,
+    }
 }
 
 /// What the terminal and the screen's timers do while the screen runs.
@@ -191,6 +236,8 @@ enum Job {
     OldStopped(String, EngineSpec),
     Switched(String, EngineSpec, anyhow::Result<EngineHandle>),
     Reverted(String, String, anyhow::Result<EngineHandle>),
+    /// A harness switch ended (/harness).
+    Changed(Switched),
 }
 
 fn start_job(spec: EngineSpec) -> LocalBoxFuture<'static, Job> {
@@ -286,6 +333,8 @@ fn agent_job(
             app.switch_reverted(&model, &error, now);
         }
         Job::Reverted(model, error, Err(again)) => app.switch_failed(&model, &error, &format!("{again:#}")),
+        // Taken by the run loop before this.
+        Job::Changed(_) => {}
     }
 }
 
@@ -295,10 +344,15 @@ async fn run_agent(
     engine: Option<EngineHandle>,
     theme: Theme,
     masker: Masker,
-) -> anyhow::Result<i32> {
+    carry: Carry,
+) -> anyhow::Result<Ended> {
     let now = Instant::now();
     let owns = engine.is_none();
     let mut app = App::new(spec, theme, masker, owns, now);
+    app.carried(carry);
+    // The harness switch under way: how to stop it, and its progress.
+    let mut switch_cancel: Option<oneshot::Sender<()>> = None;
+    let mut switch_progress: Option<mpsc::UnboundedReceiver<String>> = None;
     // Until the terminal says it reports Shift+Enter, it arrives as Enter (Windows reports it).
     app.shift_enter = cfg!(windows);
     let mut engine = engine;
@@ -372,8 +426,44 @@ async fn run_agent(
                     }
                 }
             },
+            Some(step) = next_progress(&mut switch_progress) => app.change_step(&step),
             Some(job) = jobs.next(), if !jobs.is_empty() => {
-                agent_job(job, &mut app, &mut engine, &jobs, quitting.is_some(), Instant::now());
+                let now = Instant::now();
+                match job {
+                    Job::Changed(switched) if quitting.is_none() => {
+                        switch_cancel = None;
+                        switch_progress = None;
+                        match switched {
+                            Switched::InPlace(next) => {
+                                let carry = app.carry(&next);
+                                return Ok(Ended::Switch(next, Box::new(carry)));
+                            }
+                            Switched::NewVm => {
+                                // The launcher starts the next VM once this screen has ended.
+                                if let Some(mut handle) = engine.take() {
+                                    let _ = handle.commands.send(Command::Shutdown);
+                                    wait_closed(&mut handle, STOP_WAIT).await;
+                                }
+                                return Ok(Ended::Exit(NEW_VM_EXIT));
+                            }
+                            Switched::Failed { reason, kept } => {
+                                let before = app.spec.harness == YOUGORI;
+                                if app.change_failed(&reason, now) {
+                                    if kept || before {
+                                        engine = None;
+                                        jobs.push(start_job(app.spec.clone()));
+                                    } else {
+                                        // The harness before is gone from the VM: Yougori's own
+                                        // agent needs nothing to start.
+                                        let back = Pending::yougori(&app.spec, &app.model);
+                                        app.start_switch(back, now);
+                                    }
+                                }
+                            }
+                        }
+                    }
+                    job => agent_job(job, &mut app, &mut engine, &jobs, quitting.is_some(), now),
+                }
             }
             _ = ticker.tick() => {
                 let now = Instant::now();
@@ -414,6 +504,32 @@ async fn run_agent(
                         .boxed_local(),
                     );
                 }
+                Effect::Switch(pending) => {
+                    // In place the engine stops before its pack can be replaced; a new VM's switch
+                    // leaves it running until the launcher takes over.
+                    let request = pending.request();
+                    let old = if pending.mode == Where::InPlace { engine.take() } else { None };
+                    let (progress, received) = mpsc::unbounded_channel();
+                    let (cancel, cancelled) = oneshot::channel();
+                    switch_progress = Some(received);
+                    switch_cancel = Some(cancel);
+                    let spec = app.spec.clone();
+                    jobs.push(
+                        async move {
+                            if let Some(mut old) = old {
+                                let _ = old.commands.send(Command::Shutdown);
+                                wait_closed(&mut old, SWITCH_WAIT).await;
+                            }
+                            Job::Changed(switcher::run(spec, request, progress, cancelled).await)
+                        }
+                        .boxed_local(),
+                    );
+                }
+                Effect::CancelSwitch => {
+                    if let Some(cancel) = switch_cancel.take() {
+                        let _ = cancel.send(());
+                    }
+                }
                 Effect::Redraw => {
                     io.screen.invalidate();
                     app.dirty = true;
@@ -425,6 +541,9 @@ async fn run_agent(
                         app.dirty = true;
                         if let Some(handle) = engine.as_ref() {
                             let _ = handle.commands.send(Command::Shutdown);
+                        }
+                        if let Some(cancel) = switch_cancel.take() {
+                            let _ = cancel.send(());
                         }
                     }
                 }
@@ -438,7 +557,7 @@ async fn run_agent(
     }
     // Dropping the handle stops whatever is left of the engine and its services.
     drop(engine);
-    Ok(app.exit_code())
+    Ok(Ended::Exit(app.exit_code()))
 }
 
 /// A model switch in the terminal pane. There is at most one, so its size does not matter.
@@ -456,6 +575,8 @@ enum Switch {
 enum PaneJob {
     Started(u64, anyhow::Result<pane::Child>),
     Respecced(String, anyhow::Result<EngineSpec>),
+    /// A harness switch ended (/harness).
+    Changed(Switched),
 }
 
 fn pane_start(
@@ -477,11 +598,24 @@ fn pane_start(
     .boxed_local()
 }
 
-async fn run_pane(terminal: &mut Terminal, spec: EngineSpec, theme: Theme, masker: Masker) -> anyhow::Result<i32> {
+async fn run_pane(
+    terminal: &mut Terminal,
+    spec: EngineSpec,
+    theme: Theme,
+    masker: Masker,
+    carry: Carry,
+) -> anyhow::Result<Ended> {
     let now = Instant::now();
     let mut io = Io::new();
     let size = io.screen.area();
     let mut pane = Pane::new(spec, theme, masker, size.width, size.height, now);
+    if !carry.note.is_empty() {
+        pane.note = Some((format!("Switched to {}", carry.note), now));
+    }
+    pane.kept = carry;
+    // The harness switch under way: how to stop it, and its progress.
+    let mut switch_cancel: Option<oneshot::Sender<()>> = None;
+    let mut switch_progress: Option<mpsc::UnboundedReceiver<String>> = None;
     let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel::<pane::Message>();
     let mut jobs: FuturesUnordered<LocalBoxFuture<'static, PaneJob>> = FuturesUnordered::new();
     let mut ticker = tokio::time::interval(TICK);
@@ -521,6 +655,30 @@ async fn run_pane(terminal: &mut Terminal, spec: EngineSpec, theme: Theme, maske
                         pane.wait_to_switch(now);
                     }
                 }
+                PaneEffect::Switch(pending) => {
+                    // In place the client stops before its pack can be replaced (its services stop
+                    // with it); a new VM's switch leaves it running until the launcher takes over.
+                    if pending.mode == Where::InPlace {
+                        if let Some(mut child) = pane.child.take() {
+                            child.kill();
+                        }
+                    }
+                    let request = pending.request();
+                    let (progress, received) = mpsc::unbounded_channel();
+                    let (cancel, cancelled) = oneshot::channel();
+                    switch_progress = Some(received);
+                    switch_cancel = Some(cancel);
+                    let spec = pane.spec.clone();
+                    jobs.push(
+                        async move { PaneJob::Changed(switcher::run(spec, request, progress, cancelled).await) }
+                            .boxed_local(),
+                    );
+                }
+                PaneEffect::CancelSwitch => {
+                    if let Some(cancel) = switch_cancel.take() {
+                        let _ = cancel.send(());
+                    }
+                }
                 PaneEffect::Redraw => io.screen.invalidate(),
                 PaneEffect::Quit => {
                     if quitting.is_none() {
@@ -528,6 +686,9 @@ async fn run_pane(terminal: &mut Terminal, spec: EngineSpec, theme: Theme, maske
                         pane.phase = PanePhase::Quitting { since: now };
                         if let Some(child) = pane.child.as_mut() {
                             child.kill();
+                        }
+                        if let Some(cancel) = switch_cancel.take() {
+                            let _ = cancel.send(());
                         }
                     }
                 }
@@ -591,9 +752,40 @@ async fn run_pane(terminal: &mut Terminal, spec: EngineSpec, theme: Theme, maske
                     }
                 }
             }
+            Some(step) = next_progress(&mut switch_progress) => pane.change_step(&step),
             Some(job) = jobs.next(), if !jobs.is_empty() => {
                 let now = Instant::now();
                 match job {
+                    PaneJob::Changed(_) if quitting.is_some() => {}
+                    PaneJob::Changed(switched) => {
+                        switch_cancel = None;
+                        switch_progress = None;
+                        match switched {
+                            Switched::InPlace(next) => {
+                                drop(pane.child.take());
+                                let mut carry = std::mem::take(&mut pane.kept);
+                                carry.note = format!("{} · {}", next.name, next.model);
+                                return Ok(Ended::Switch(next, Box::new(carry)));
+                            }
+                            Switched::NewVm => {
+                                // The launcher starts the next VM once this screen has ended.
+                                drop(pane.child.take());
+                                return Ok(Ended::Exit(NEW_VM_EXIT));
+                            }
+                            Switched::Failed { reason, kept } => {
+                                if pane.change_failed(&reason, now) {
+                                    if kept {
+                                        pane.effects.push(PaneEffect::Start);
+                                    } else {
+                                        // The harness before is gone from the VM: Yougori's own
+                                        // agent needs nothing to start.
+                                        let back = Pending::yougori(&pane.spec, &pane.spec.model);
+                                        pane.start_switch(back, now);
+                                    }
+                                }
+                            }
+                        }
+                    }
                     PaneJob::Started(generation, Ok(child)) => {
                         if quitting.is_some() || generation != pane.generation {
                             drop(child);
@@ -653,5 +845,5 @@ async fn run_pane(terminal: &mut Terminal, spec: EngineSpec, theme: Theme, maske
         }
     }
     drop(pane.child.take());
-    Ok(pane.exit_code())
+    Ok(Ended::Exit(pane.exit_code()))
 }

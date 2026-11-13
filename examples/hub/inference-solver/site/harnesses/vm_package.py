@@ -3,12 +3,15 @@
 An image made for one harness pins its tool package (tool-package.json). The Yougori harness's
 base image pins none: before any chunk, the launcher tells the VM which harness's pack to expect,
 with its hash and size, or that the harness needs none (`expect`, taken once). The pack is then
-received and checked exactly as a pinned one."""
+received and checked exactly as a pinned one. When the person switches harness in the screen
+(/harness), the launcher declares the next harness's pack (`expect` with `replace`): the pack
+installed is removed first, then the next one arrives as the first did."""
 import base64
 import hashlib
 import json
 from pathlib import Path
 import re
+import shutil
 import tarfile
 import threading
 
@@ -42,10 +45,12 @@ class Package:
     def status(self):
         with self.lock: return self.current()
 
-    def expect(self,data):
+    def expect(self,data,replace=False):
         """The launcher's word on what this VM runs: {"harness"} alone when that harness needs no
         pack, or with its pack's "sha256" and "bytes". Taken once, before any chunk; the same word
-        again (a reply that was lost) changes nothing, and any other is refused."""
+        again (a reply that was lost) changes nothing, and any other is refused. With `replace` (a
+        switch the screen asked for, vm_guest), another word is taken once the installed pack is
+        whole: that pack is removed first, so nothing of it is left to run."""
         if (not isinstance(data,dict) or set(data)-{'harness','sha256','bytes'} or not isinstance(data.get('harness'),str)
                 or not HARNESS.fullmatch(data['harness'])):
             raise ValueError('Invalid pack declaration.')
@@ -57,15 +62,31 @@ class Package:
             pack={'sha256':data['sha256'],'bytes':data['bytes']}
         with self.lock:
             if self.harness is not None:
-                if self.harness!=data['harness'] or self.spec!=pack:
+                if self.harness==data['harness'] and self.spec==pack:
+                    return self.current()
+                if not replace:
                     raise ValueError('This VM already expects another pack.')
-                return self.current()
-            if self.phase!='expecting':
+                if self.phase not in ('ready','failed'):
+                    raise ValueError('The pack before is still arriving.')
+                if pack is not None:
+                    # The next pack takes the place of the one before. A harness that needs no pack
+                    # (Yougori's own agent) leaves it in place: nothing starts from it.
+                    self.remove()
+                self.offset=0;self.error=''
+            elif self.phase!='expecting':
                 raise ValueError('This VM does not take a pack declaration.')
             self.harness=data['harness']
             self.spec=pack
             self.phase='waiting' if pack else 'ready'
             return self.current()
+
+    def remove(self):
+        """Takes the installed pack out of the VM: its two roots, and a transfer left half-way."""
+        for name in ('tool','source'):
+            shutil.rmtree(self.root/name,ignore_errors=True)
+            if (self.root/name).exists():
+                raise ValueError('The pack before could not be removed. Restart this VM.')
+        self.path.unlink(missing_ok=True)
 
     def chunk(self,data):
         with self.lock:

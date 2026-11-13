@@ -1,15 +1,23 @@
 # The Yougori harness
 
 Our own terminal agent. It runs inside a Yougori Sandbox VM, and it holds every inference harness:
-the person picks a harness, then a model from their inference, then answers that harness's own
-questions, and works in one Yougori screen whichever harness they chose.
+a session starts Yougori with a model from the person's inference, and in its chat `/harness`
+switches to any other harness (each asks its own questions there) and `/model` to another model.
+The person works in one Yougori screen whichever harness runs.
 
 ```
 yougori inference run --server https://argon.yougori.com
-◇  Which harness?   Strix (security)
 ◇  Which model?     unsloth/gemma-4-26B-A4B-it-GGUF
-◇  What should it test? ...
+◇  What should the harness work on?  C:\Projects\shop
+◇  Start Yougori?   Start
+
+> /harness strix
+◆  Strix · What should it test?
+│  ● A practice app inside the VM
 ```
+
+`yougori inference run HARNESS` (or `--harness NAME`) starts with that harness inside Yougori
+instead, its questions asked by the CLI before the VM starts.
 
 ## Why Rust (decided 12 Nov 2026, and kept)
 
@@ -28,7 +36,7 @@ another product; Python's interfaces redraw too heavily for the relay.
 ## How it fits together
 
 ```
-host: yougori inference run  ->  questions (harness, model, its own, folder, reach, size), Start
+host: yougori inference run  ->  questions (model, folder, reach, size), Start
       solver.py run yougori --harness NAME / vm_host.py  ->  Sandbox VM: the Yougori base image,
                                                             then NAME's pack through the VM's
                                                             private control connection
@@ -63,6 +71,21 @@ Their VM reaches only the target and this inference.
 - **Secrets** (a test login's password) never go into the spec, arguments, logs or reports: the
   VM passes them to this process as `YOUGORI_SECRET_<ID>`, the spec's `secret_env` maps them into
   the engine's environment, and the screen masks their values.
+- **Switching harness** (`/harness`, or Ctrl+P in the terminal pane; `src/ui/switcher.rs`). The
+  list is `spec.harnesses`, which the launcher reads from the website for this session (offered,
+  ready here, known to this launcher). The chosen harness's questions are asked in the screen with
+  the CLI's meaning; secrets typed there stay in this process's memory. A harness that starts on
+  this VM's base image, needs no more memory and whose targets this VM already reaches (the
+  practice app always is) comes into this VM: the screen stops the engine, runs `spec.switch`
+  (`runtime.py switch`) with `{"harness", "model", "answers", "mode": "in-place"}` on stdin, the
+  launcher delivers that harness's pack in the place of the one installed (progress comes back as
+  `{"progress": TEXT}` lines on stderr), and the next spec comes back on stdout; the conversation
+  goes on under a divider. Any other harness starts in a new VM once the person confirms: the
+  request adds `"targets"`, `"memory"` and `"secrets"`, stdout says `{"new_vm": true}`, the screen
+  exits 75 and the launcher starts that VM (asking on the person's own terminal when its targets
+  go beyond what the run already held). A failure is `{"error", "kept"}`: the harness before starts
+  again, or Yougori's own agent when its pack is gone. Esc while switching sends SIGTERM. Only the
+  switch command gets the session's switch token (`YOUGORI_SWITCH_TOKEN`), never an engine.
 - **Models.** The model switcher lists `spec.models`. Engines that switch in place (`live`) get
   `SetModel`; the rest restart through `spec.respec` with the new model.
 - **Our own agent** (`src/native`): streaming tool calls, a step limit, a stuck-loop guard,

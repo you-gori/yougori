@@ -64,7 +64,10 @@ def login(server, harness, key_file, open_browser=False):
     interval = max(3, min(30, int(state.get("interval", 3))))
     print(f"\nSign in to Inference Solver\nOpen: {verification}\nEnter code: {code}\n", flush=True)
     print("Approve this harness on the website. This terminal will continue automatically.", flush=True)
-    # Never open a browser/window automatically. The user follows the printed link.
+    # This launcher never opens a browser or window itself. `yougori inference run` shows this
+    # address as a link and, for a person at its terminal, opens it in the browser once: only
+    # this installed origin's page, never an address the website supplies. The code is still
+    # typed on the website, never put in the address.
     deadline = time.monotonic() + state["expires_in"]
     while time.monotonic() < deadline:
         time.sleep(interval)

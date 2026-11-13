@@ -7,7 +7,7 @@ use std::{
     process::{Command, Stdio},
 };
 use zeroize::Zeroizing;
-pub const HELP: &str = "yougori inference connect URL [--models REPO,REPO --sandbox none|CPU,GB,VMS] [--reconnect]\n  Start Yougori if needed and choose what this computer does for the website: run 1 to 3 of\n  the models its administrator lists (Yougori installs them here; each loads on the GPU while\n  it is used and unloads after 5 minutes without requests), run Sandbox VMs within limits you\n  set, or both. It connects once each chosen model can answer, showing its download and load;\n  Ctrl+C before then stops waiting, and the download goes on. The first time, approve the code\n  it shows on the website. Next time, continue with the same choices or change them: a model\n  you drop is deleted from this computer if Yougori installed it for the website. Once\n  connected, Ctrl+C disconnects and stops the models it ran for it.\n  --models and --sandbox answer the questions (--models \"\" for none); without a terminal and\n  without them, the last choices are used.\n\nyougori inference run [HARNESS] --server URL [--harness NAME] [--model ID]\n    [--set ID=VALUE]... [--workspace PATH] [--internet inference|sites|targets|full]\n    [--sites HOST,HOST] [--targets HOST:PORT,HOST:PORT] [--cpu N] [--memory GB] [--yes]\n  Start a harness in a Yougori Sandbox VM. It asks, with Back: which harness (Yougori's own\n  agent first, then the website's coding and security harnesses; HARNESS or --harness starts\n  the list on one), which model (signing in on the website the first time), the harness's own\n  questions (a security harness asks what to test, whether you own it or have written\n  permission to test it, what is off limits, how far it may go, a test login, the source code\n  and a focus), then the folder copied in (changes come back only after your review), what\n  the VM can reach (only this inference, sites you choose, or the whole internet as well; a\n  security harness reaches only its target and this inference; prompts and replies always go\n  to the inference) and its CPU and memory.\n  Options given skip their question. --set ID=VALUE answers one of the harness's own, such as\n  --set target=practice or --set permission=yes. A secret, such as a test login's password,\n  comes only from a YOUGORI_SECRET_ID environment variable (YOUGORI_SECRET_LOGIN_PASSWORD),\n  never from the command line. --yes asks nothing: the options given and defaults.\n\nyougori inference install HARNESS --server URL\n  Prepare the images that run starts HARNESS from, without starting it: the Yougori\n  base image and HARNESS's pack (yougori, Yougori's own agent, needs only the base). Like\n  run, it needs HARNESS offered on the website and its images published.\n\nYougori manages the client and private runtime. No separate solver-* installation.\nRun the same command next time. Ctrl+C disconnects.\n";
+pub const HELP: &str = "yougori inference connect URL [--models REPO,REPO --sandbox none|CPU,GB,VMS] [--reconnect]\n  Start Yougori if needed and choose what this computer does for the website: run 1 to 3 of\n  the models its administrator lists (Yougori installs them here; each loads on the GPU while\n  it is used and unloads after 5 minutes without requests), run Sandbox VMs within limits you\n  set, or both. It connects once each chosen model can answer, showing its download and load;\n  Ctrl+C before then stops waiting, and the download goes on. The first time, approve the code\n  it shows on the website. Next time, continue with the same choices or change them: a model\n  you drop is deleted from this computer if Yougori installed it for the website. Once\n  connected, Ctrl+C disconnects and stops the models it ran for it.\n  --models and --sandbox answer the questions (--models \"\" for none); without a terminal and\n  without them, the last choices are used.\n\nyougori inference run [HARNESS] --server URL [--harness NAME] [--model ID]\n    [--set ID=VALUE]... [--workspace PATH] [--internet inference|sites|targets|full]\n    [--sites HOST,HOST] [--targets HOST:PORT,HOST:PORT] [--cpu N] [--memory GB] [--yes]\n    [--no-browser]\n  Start Yougori in a Sandbox VM, with its own agent. In its chat, /harness switches to another\n  of the website's harnesses and /model to another model. It asks, with Back: which model\n  (signing in on the website the first time: it opens the sign-in page in your browser, where\n  you enter the code it shows; --no-browser only shows the link), then the folder copied in\n  (changes come back only after your review), what the VM can reach (only this inference,\n  sites you choose, or the whole internet as well; prompts and replies always go to the\n  inference) and its CPU and memory. HARNESS or --harness starts that harness inside Yougori\n  instead, and asks its own questions after the model (a security harness asks what to test,\n  whether you own it or have written permission to test it, what is off limits, how far it\n  may go, a test login, the source code and a focus, and reaches only its target and this\n  inference).\n  Options given skip their question. --set ID=VALUE answers one of the harness's own, such as\n  --set target=practice or --set permission=yes. A secret, such as a test login's password,\n  comes only from a YOUGORI_SECRET_ID environment variable (YOUGORI_SECRET_LOGIN_PASSWORD),\n  never from the command line. --yes asks nothing: the options given and defaults.\n\nyougori inference install HARNESS --server URL\n  Prepare the images that run starts HARNESS from, without starting it: the Yougori\n  base image and HARNESS's pack (yougori, Yougori's own agent, needs only the base). Like\n  run, it needs HARNESS offered on the website and its images published.\n\nYougori manages the client and private runtime. No separate solver-* installation.\nRun the same command next time. Ctrl+C disconnects.\n";
 const PACKAGES: &str =
     include_str!("../../examples/hub/inference-solver/site/harnesses/packages.json");
 const INSTALLER: &str =
@@ -166,8 +166,8 @@ fn origin(value: &str) -> Result<String, String> {
 struct Options {
     action: String,
     /// The harness named after the action: for `install` the one whose images it prepares, for
-    /// `run` only where the list of harnesses starts (empty when none is named). The website's
-    /// catalogue checks it.
+    /// `run` the one it starts inside Yougori (empty when none is named: Yougori's own agent).
+    /// The website's catalogue checks it.
     harness: String,
     server: String,
     extra: Vec<String>,
@@ -205,7 +205,7 @@ fn options(args: &[String]) -> Result<Options, String> {
     if !matches!(action, "run" | "install") {
         return Err(HELP.into());
     }
-    // `run` may name no harness: the person chooses one from the website's list.
+    // `run` may name no harness: it starts Yougori's own agent.
     let harness = args.get(1).filter(|arg| !arg.starts_with('-')).cloned().unwrap_or_default();
     if action == "install" {
         let known = launcher_harnesses();
@@ -670,7 +670,6 @@ struct Harness {
     id: String,
     name: String,
     security: bool,
-    description: String,
     /// It can start: offered by the administrator, its VM image published, and this CLI's
     /// launcher knows it and its questions.
     ready: bool,
@@ -682,15 +681,6 @@ struct Harness {
 }
 
 impl Harness {
-    /// Its name in the list of harnesses.
-    fn label(&self) -> String {
-        if self.security {
-            format!("{} (security)", self.name)
-        } else {
-            self.name.clone()
-        }
-    }
-
     fn question(&self, id: &str) -> Option<&Question> {
         self.questions.iter().find(|question| question.id == id)
     }
@@ -919,7 +909,6 @@ fn harnesses(body: &[u8]) -> Result<Vec<Harness>, String> {
             reason,
             questions: asked.unwrap_or_default(),
             size: vm_size(&item["size"], security),
-            description: item["description"].as_str().map(plain_words).unwrap_or_default(),
             id,
             name,
             security,
@@ -928,7 +917,7 @@ fn harnesses(body: &[u8]) -> Result<Vec<Harness>, String> {
     Ok(listed)
 }
 
-/// The harnesses that can start, as the list shows them: Yougori first, then the coding ones,
+/// The harnesses that can start, as a refusal names them: Yougori first, then the coding ones,
 /// then the security ones, each in the website's order.
 fn startable(catalogue: &[Harness]) -> Vec<Harness> {
     let mut ready: Vec<Harness> = catalogue.iter().filter(|harness| harness.ready).cloned().collect();
@@ -936,14 +925,14 @@ fn startable(catalogue: &[Harness]) -> Vec<Harness> {
     ready
 }
 
-/// The harness the command line names: HARNESS or `--harness`; `yougori` as HARNESS holds the
-/// `--harness` one, or is Yougori's own agent.
-fn named_harness(positional: &str, flag: Option<&str>) -> Result<Option<String>, String> {
+/// The harness a run starts inside Yougori: the one the command line names (HARNESS or
+/// `--harness`; `yougori` as HARNESS holds the `--harness` one), or else Yougori's own agent.
+fn named_harness(positional: &str, flag: Option<&str>) -> Result<String, String> {
     match (positional, flag) {
-        ("", None) => Ok(None),
-        ("" | YOUGORI, Some(flag)) => Ok(Some(flag.to_owned())),
-        (named, None) => Ok(Some(named.to_owned())),
-        (named, Some(flag)) if named == flag => Ok(Some(flag.to_owned())),
+        ("" | YOUGORI, None) => Ok(YOUGORI.to_owned()),
+        ("" | YOUGORI, Some(flag)) => Ok(flag.to_owned()),
+        (named, None) => Ok(named.to_owned()),
+        (named, Some(flag)) if named == flag => Ok(flag.to_owned()),
         _ => Err("Name the harness once: as HARNESS, or with --harness NAME.".into()),
     }
 }
@@ -1692,26 +1681,6 @@ fn target_picks(question: &Question) -> Vec<Pick> {
     ]
 }
 
-/// Which harness: the ones that can start, Yougori first, coding then security. Choosing another
-/// harness starts its answers again from the options given.
-fn choose_harness(
-    plan: &mut Plan,
-    offered: &[Harness],
-    preselect: Option<&str>,
-    chosen: &Permissions,
-    environment: &dyn Fn(&str) -> Option<Zeroizing<String>>,
-) -> Result<bool, String> {
-    use crate::cli_ui::{self as ui, Choice};
-    let choices: Vec<Choice> = offered.iter().map(|harness| Choice::new(harness.label(), harness.description.clone())).collect();
-    let current = plan.harness.as_ref().map(|harness| harness.id.as_str()).or(preselect);
-    let initial = current.and_then(|id| offered.iter().position(|harness| harness.id == id)).unwrap_or(0);
-    let harness = &offered[ui::select("Which harness?", &[], &choices, initial)?];
-    if plan.harness.as_ref().is_none_or(|before| before.id != harness.id) {
-        *plan = plan_for(harness, chosen, environment)?;
-    }
-    Ok(true)
-}
-
 /// Which model: from the person's models on the website (signing in first when needed), one
 /// still shown to confirm; `--model` answers it.
 async fn choose_model(plan: &mut Plan, given: Option<&str>, models: &mut Models<'_>) -> Result<bool, String> {
@@ -2115,11 +2084,18 @@ fn start_hint(harness: &Harness, folder: bool) -> String {
 
 /// The Start step: the run summed up, then Start or Cancel. When something keeps the run from
 /// starting ([`start_check`]), it says what instead of what the VM reaches, Start cannot be
-/// chosen, and Back (where the cursor starts) returns to the answers that change it.
+/// chosen, and Back (where the cursor starts) returns to the answers that change it. When no
+/// question came before Start (options answered them all), there is nothing to go back to: the
+/// run stops with the reason, as it does without questions.
 fn confirm_start(plan: &Plan, server: &str) -> Result<bool, String> {
     use crate::cli_ui::{self as ui, Choice};
     let harness = plan.chosen()?;
     let ready = start_check(plan);
+    if let Err(problem) = &ready {
+        if !ui::offers_back() {
+            return Err(problem.clone());
+        }
+    }
     let mut lines = summary(plan, server, ready.as_ref().ok());
     let cancel = Choice::new("Cancel", "nothing is started");
     let choices = match &ready {
@@ -2136,31 +2112,21 @@ fn confirm_start(plan: &Plan, server: &str) -> Result<bool, String> {
     }
 }
 
-/// The questions before a harness VM starts, as one wizard with Back: which harness, which model,
-/// the harness's own questions, the folder, the reach and the size, then Start. Options given
-/// answer their questions. Cancelling starts nothing.
-#[allow(clippy::too_many_arguments)]
-async fn ask_run(
-    plan: &mut Plan,
-    offered: &[Harness],
-    preselect: Option<&str>,
-    chosen: &Permissions,
-    environment: &dyn Fn(&str) -> Option<Zeroizing<String>>,
-    models: &mut Models<'_>,
-    server: &str,
-    host: &Value,
-) -> Result<(), String> {
+/// The questions before the harness's VM starts, as one wizard with Back: which model, the
+/// harness's own questions, the folder, the reach and the size, then Start. The harness is the
+/// plan's ([`named_harness`]), never asked. Options given answer their questions. Back from the
+/// first question asked cancels, and cancelling starts nothing.
+async fn ask_run(plan: &mut Plan, chosen: &Permissions, models: &mut Models<'_>, server: &str, host: &Value) -> Result<(), String> {
+    let questions = plan.chosen()?.questions.len();
     let mut steps = crate::cli_ui::Wizard::new();
     loop {
-        let questions = plan.harness.as_ref().map_or(0, |harness| harness.questions.len());
         let asked = match steps.step() {
-            0 => choose_harness(plan, offered, preselect, chosen, environment),
-            1 => choose_model(plan, chosen.model.as_deref(), models).await,
-            step if step < 2 + questions => ask_question(plan, step - 2),
-            step if step == 2 + questions => choose_folder(plan, chosen),
-            step if step == 3 + questions => choose_reach(plan, chosen, server),
-            step if step == 4 + questions => choose_size(plan, chosen, host),
-            step if step == 5 + questions => confirm_start(plan, server),
+            0 => choose_model(plan, chosen.model.as_deref(), models).await,
+            step if step <= questions => ask_question(plan, step - 1),
+            step if step == 1 + questions => choose_folder(plan, chosen),
+            step if step == 2 + questions => choose_reach(plan, chosen, server),
+            step if step == 3 + questions => choose_size(plan, chosen, host),
+            step if step == 4 + questions => confirm_start(plan, server),
             _ => break,
         };
         steps.next(asked)?;
@@ -2366,10 +2332,11 @@ fn launcher(python: &Path, stage: &Path, executable: &Path) -> Command {
     child
 }
 
-/// Before a harness VM starts: the engine runs, the website's harnesses are read, and the person
-/// answers the run's questions (options answer theirs, `secrets` the secret ones; with --yes, or
-/// without a terminal, nothing is asked). Every question that applies has the answer it needs
-/// before anything starts. Returns the run the launcher starts.
+/// Before a harness VM starts: the engine runs, the website's harnesses are read, the harness is
+/// found (the one named, or Yougori's own agent), and the person answers the run's questions
+/// (options answer theirs, `secrets` the secret ones; with --yes, or without a terminal, nothing
+/// is asked). Every question that applies has the answer it needs before anything starts.
+/// Returns the run the launcher starts.
 async fn prepare_run(
     opts: &mut Options,
     python: &Path,
@@ -2378,46 +2345,34 @@ async fn prepare_run(
     secrets: &BTreeMap<String, Zeroizing<String>>,
 ) -> Result<Plan, String> {
     use crate::cli_ui as ui;
+    use std::io::IsTerminal;
     let chosen = permissions(&mut opts.extra)?;
-    let named = named_harness(&opts.harness, chosen.harness.as_deref())?;
+    let name = named_harness(&opts.harness, chosen.harness.as_deref())?;
     let asking = !chosen.yes && ui::can_prompt();
+    let terminal = std::io::stdin().is_terminal() && std::io::stdout().is_terminal();
+    let browser = opens_browser(&chosen, &opts.extra, terminal).then(|| Box::new(ui::open_in_browser) as Browser);
     ui::busy("Starting Yougori engine", crate::client::start(None)).await?;
     let site = site_name(&opts.server).to_owned();
     let catalogue = ui::busy(&format!("Reading the harnesses on {site}"), site_harnesses(&opts.server)).await?;
-    // `yougori` alone names no harness to start on: the list starts on Yougori anyway.
-    let preselect = named.filter(|name| !(asking && name == YOUGORI && chosen.harness.is_none()));
-    if let Some(name) = &preselect {
-        find_harness(&catalogue, name, &site)?;
-    }
+    let harness = find_harness(&catalogue, &name, &site)?;
+    let environment = |name: &str| secrets.get(name).cloned();
+    let mut plan = plan_for(harness, &chosen, &environment)?;
     let host = match ui::busy("Reading this computer's capacity", crate::public::call("get_platform_state", json!({}))).await {
         Ok(state) => state["host"].clone(),
         Err(error) if asking || error == ui::CANCELLED => return Err(error),
         // Without questions the harness's default size is used as it is.
         Err(_) => Value::Null,
     };
-    let environment = |name: &str| secrets.get(name).cloned();
-    let mut models = Models { python, stage, executable, server: &opts.server, known: HashMap::new() };
-    let mut plan = Plan::default();
+    let mut models = Models { python, stage, executable, server: &opts.server, known: HashMap::new(), sign_in: SignIn::new(&opts.server, browser) };
     if asking {
-        let offered = startable(&catalogue);
-        if offered.is_empty() {
-            return Err(format!(
-                "{site} has no harness ready to start yet. Its administrator offers harnesses and publishes their VM images in Admin."
-            ));
-        }
-        ask_run(&mut plan, &offered, preselect.as_deref(), &chosen, &environment, &mut models, &opts.server, &host)
-            .await
-            .map_err(|error| {
-                if error == ui::BACK || error == ui::CANCELLED {
-                    crate::wire::cancelled("Nothing was started.")
-                } else {
-                    error
-                }
-            })?;
+        ask_run(&mut plan, &chosen, &mut models, &opts.server, &host).await.map_err(|error| {
+            if error == ui::BACK || error == ui::CANCELLED {
+                crate::wire::cancelled("Nothing was started.")
+            } else {
+                error
+            }
+        })?;
     } else {
-        let name = preselect.ok_or("Name the harness to run: yougori inference run HARNESS --server URL (or --harness NAME).")?;
-        let harness = find_harness(&catalogue, &name, &site)?;
-        plan = plan_for(harness, &chosen, &environment)?;
         let list = models.of(&harness.id).await?;
         plan.model = Some(pick_model(&list, chosen.model.as_deref(), &site)?);
         settle(&mut plan)?;
@@ -2455,6 +2410,8 @@ struct Models<'a> {
     executable: &'a Path,
     server: &'a str,
     known: HashMap<String, Vec<String>>,
+    /// How the launcher's sign-in words show while it reads them.
+    sign_in: SignIn,
 }
 
 impl Models<'_> {
@@ -2463,16 +2420,67 @@ impl Models<'_> {
             return Ok(list.clone());
         }
         let label = format!("Reading your models on {}", site_name(self.server));
-        let list = crate::cli_ui::busy(&label, signed_in_models(self.python, self.stage, self.executable, harness, self.server)).await?;
+        let reading = signed_in_models(self.python, self.stage, self.executable, harness, self.server, &mut self.sign_in);
+        let list = crate::cli_ui::busy(&label, reading).await?;
         self.known.insert(harness.to_owned(), list.clone());
         Ok(list)
     }
 }
 
+/// Opens a web address in the person's browser: whether it was handed to the browser.
+/// [`crate::cli_ui::open_in_browser`], or a stand-in in tests.
+type Browser = Box<dyn FnOnce(&str) -> bool>;
+
+/// Whether a run opens the website's sign-in page in the browser: only for a person at this
+/// terminal (`terminal`: stdin and stdout are terminals), never with --yes or --no-browser.
+fn opens_browser(chosen: &Permissions, passed_on: &[String], terminal: bool) -> bool {
+    terminal && !chosen.yes && !passed_on.iter().any(|arg| arg == "--no-browser")
+}
+
+/// The website's own sign-in page, at the address the run was given (as device_login.py names
+/// it). The only address a run ever opens in the browser.
+fn sign_in_page(server: &str) -> String {
+    format!("{server}/#connect")
+}
+
+/// The launcher's sign-in words, as they show while a run reads the person's models: each line as
+/// plain words under the step, with the website's own sign-in page as a link the person can open.
+/// The first time the page shows, it also opens in the browser, when there is one to open it in.
+struct SignIn {
+    page: String,
+    /// Taken the first time the page shows; `None` from the start for scripts.
+    browser: Option<Browser>,
+}
+
+impl SignIn {
+    fn new(server: &str, browser: Option<Browser>) -> Self {
+        Self { page: sign_in_page(server), browser }
+    }
+
+    /// Shows one line the launcher printed, through `show`. `Open: PAGE` shows PAGE as a link and,
+    /// once, opens it (saying so when the browser took it). Any other line, an `Open:` line with
+    /// another address too, shows as the words it is, and nothing else is ever opened.
+    fn relay(&mut self, said: &str, show: &mut dyn FnMut(String)) {
+        use crate::cli_ui as ui;
+        let said = plain_words(said);
+        if said.is_empty() {
+            return;
+        }
+        if said.strip_prefix("Open:").map(str::trim) != Some(self.page.as_str()) {
+            show(format!("{}  {said}", ui::muted("│")));
+            return;
+        }
+        show(format!("{}  Open: {}", ui::muted("│"), ui::link(&self.page)));
+        if self.browser.take().is_some_and(|open| open(&self.page)) {
+            show(format!("{}  {}", ui::muted("│"), ui::muted("Opened in your browser.")));
+        }
+    }
+}
+
 /// The models this person's key reaches on the website, from the launcher's `models --json`. It
 /// first checks that `harness` can start on this computer and website, then signs in when there
-/// is no key yet: its sign-in words show as they come. Stopping the wait stops it.
-async fn signed_in_models(python: &Path, stage: &Path, executable: &Path, harness: &str, server: &str) -> Result<Vec<String>, String> {
+/// is no key yet: its sign-in words show as they come ([`SignIn`]). Stopping the wait stops it.
+async fn signed_in_models(python: &Path, stage: &Path, executable: &Path, harness: &str, server: &str, sign_in: &mut SignIn) -> Result<Vec<String>, String> {
     use tokio::io::AsyncBufReadExt;
     let mut command = tokio::process::Command::from(launcher(python, stage, executable));
     command
@@ -2492,10 +2500,7 @@ async fn signed_in_models(python: &Path, stage: &Path, executable: &Path, harnes
         if let Some(said) = said {
             let mut lines = tokio::io::BufReader::new(said).lines();
             while let Ok(Some(line)) = lines.next_line().await {
-                let line = plain_words(&line);
-                if !line.is_empty() {
-                    crate::cli_ui::line(&format!("{}  {line}", crate::cli_ui::muted("│")));
-                }
+                sign_in.relay(&line, &mut |shown| crate::cli_ui::line(&shown));
             }
         }
     };
@@ -3688,7 +3693,7 @@ mod tests {
             assert!(origin(url).is_err(), "{url}");
         }
         assert!(options(&args(&["connect", "https://example.com", "--reconnect"])).is_ok());
-        // `run` names a harness only to start the list on it: the website's catalogue checks it.
+        // `run` names the harness it starts inside Yougori: the website's catalogue checks it.
         assert_eq!(options(&args(&["run", "missing", "--server", "https://example.com"])).unwrap().harness, "missing");
         let unnamed = options(&args(&["run", "--server", "https://example.com", "--yes"])).unwrap();
         assert_eq!((unnamed.harness.as_str(), unnamed.extra), ("", args(&["--yes"])));
@@ -3860,7 +3865,6 @@ mod tests {
             id: id.into(),
             name: id.into(),
             security,
-            description: String::new(),
             ready,
             reason: if ready { String::new() } else { "The administrator has not published this harness's Sandbox VM image yet.".into() },
             questions: Vec::new(),
@@ -3882,7 +3886,7 @@ mod tests {
             }
         }
         let strix = harness("strix");
-        assert_eq!(strix.label(), "Strix (security)");
+        assert!(strix.security && strix.name == "Strix");
         let ids: Vec<&str> = strix.questions.iter().map(|question| question.id.as_str()).collect();
         assert_eq!(ids, ["target", "permission", "off_limits", "depth", "login_user", "login_password", "source", "focus"]);
         let permission = strix.question("permission").unwrap();
@@ -4072,17 +4076,66 @@ mod tests {
     }
 
     #[test]
-    fn the_list_puts_yougori_first_then_coding_then_security() {
+    fn a_run_starts_yougori_unless_the_command_names_another_harness() {
+        // Nothing asks which harness: without a name, Yougori's own agent, which switches to the
+        // others from inside.
+        assert_eq!(named_harness("", None), Ok(YOUGORI.into()));
+        assert_eq!(named_harness(YOUGORI, None), Ok(YOUGORI.into()));
+        assert_eq!(named_harness("", Some(YOUGORI)), Ok(YOUGORI.into()));
+        assert_eq!(named_harness(YOUGORI, Some(YOUGORI)), Ok(YOUGORI.into()));
+        // A harness named starts inside Yougori, as before.
+        assert_eq!(named_harness("strix", None), Ok("strix".into()));
+        assert_eq!(named_harness(YOUGORI, Some("strix")), Ok("strix".into()));
+        assert_eq!(named_harness("", Some("pi")), Ok("pi".into()));
+        assert_eq!(named_harness("pi", Some("pi")), Ok("pi".into()));
+        assert!(named_harness("strix", Some("pi")).is_err());
+        // Each comes from the website's list, and a refusal names the ready ones: Yougori first,
+        // then coding, then security.
         let catalogue = [made("strix", true, true), made("opencode", false, true), made("aider", false, false), made(YOUGORI, false, true), made("pi", false, true)];
         let order: Vec<String> = startable(&catalogue).into_iter().map(|harness| harness.id).collect();
         assert_eq!(order, ["yougori", "opencode", "pi", "strix"]);
-        assert_eq!(named_harness("", None), Ok(None));
-        assert_eq!(named_harness("strix", None), Ok(Some("strix".into())));
-        assert_eq!(named_harness(YOUGORI, Some("strix")), Ok(Some("strix".into())));
-        assert_eq!(named_harness("", Some("pi")), Ok(Some("pi".into())));
-        assert_eq!(named_harness("pi", Some("pi")), Ok(Some("pi".into())));
-        assert_eq!(named_harness(YOUGORI, None), Ok(Some(YOUGORI.into())));
-        assert!(named_harness("strix", Some("pi")).is_err());
+        let site = "argon.yougori.com";
+        assert_eq!(find_harness(&catalogue, &named_harness("", None).unwrap(), site).unwrap().id, YOUGORI);
+        assert_eq!(find_harness(&catalogue, "aider", site).unwrap_err(), format!("aider cannot start here: {}", catalogue[2].reason));
+        let without = [made("opencode", false, true), made(YOUGORI, false, false)];
+        assert_eq!(find_harness(&without, YOUGORI, site).unwrap_err(), format!("yougori cannot start here: {}", without[1].reason));
+        assert_eq!(find_harness(&without[..1], YOUGORI, site).unwrap_err(), "argon.yougori.com lists no harness yougori. It offers: opencode.");
+    }
+
+    #[test]
+    fn yougori_alone_runs_its_own_agent_with_no_harness_question() {
+        // `run --server URL` and `run yougori`: Yougori's own agent asks nothing of its own, so the
+        // launcher gets only what a run of Yougori needs.
+        let yougori = harness(YOUGORI);
+        assert!(yougori.questions.is_empty() && !yougori.security);
+        let mut plan = plan_for(&yougori, &Permissions { model: Some("m".into()), ..Permissions::default() }, &no_secrets).unwrap();
+        settle(&mut plan).unwrap();
+        settle_size(&mut plan, &Value::Null);
+        assert_eq!(start_check(&plan), Ok(Internet::Inference));
+        assert_eq!(summary(&plan, "https://argon.yougori.com", Some(&Internet::Inference)), args(&[
+            "Folder: none (an empty workspace)",
+            "Reaches: only argon.yougori.com",
+            "Size: 2 CPU, 4 GB memory",
+        ]));
+        assert_eq!(start_hint(&yougori, false), "prepare the VM and open Yougori in this terminal");
+        let arguments = launch_arguments(&plan, "https://argon.yougori.com", Path::new("answers.json")).unwrap();
+        assert_eq!(arguments[..8], args(&["run", YOUGORI, "--server", "https://argon.yougori.com", "--harness", YOUGORI, "--model", "m"]));
+        assert_eq!(answers_json(&plan), json!({}));
+        // A harness's own answers are for the harness named: Yougori takes none.
+        assert_eq!(plan_for(&yougori, &sets(&[("target", "practice")]), &no_secrets).err().unwrap(), "Yougori asks no questions, so it takes no --set target.");
+    }
+
+    #[test]
+    fn with_nothing_asked_before_start_a_run_that_cannot_start_says_why() {
+        // Back from the first question asked cancels; at Start that would end the run without its
+        // reason, so the reason itself ends it, as it does without questions.
+        let _painted = crate::cli_ui::tests::Painted::fresh();
+        assert!(!crate::cli_ui::offers_back());
+        let mut plan = plan_for(&harness(YOUGORI), &Permissions { internet: Some(Internet::Targets(vec![], vec![])), ..Permissions::default() }, &no_secrets).unwrap();
+        plan.model = Some("m".into());
+        let problem = start_check(&plan).unwrap_err();
+        assert!(problem.starts_with("--internet targets needs a target outside the VM"), "{problem}");
+        assert_eq!(confirm_start(&plan, "https://argon.yougori.com"), Err(problem));
     }
 
     #[test]
@@ -4700,6 +4753,105 @@ mod tests {
         assert_eq!(pick_model(&args(&["a/b", "c/d"]), None, site), Err("Choose the model with --model ID. argon.yougori.com has: a/b, c/d.".into()));
         assert_eq!(pick_model(&args(&["a/b"]), Some("z/z"), site), Err("argon.yougori.com has no model z/z for your key. It has: a/b.".into()));
         assert!(pick_model(&[], None, site).unwrap_err().contains("has no models for your key yet"));
+    }
+
+    /// The sign-in words device_login.py prints, as `models --json` passes them on stderr.
+    fn sign_in_words(page: &str) -> Vec<String> {
+        let printed = format!(
+            "\nSign in to Inference Solver\nOpen: {page}\nEnter code: GMM3-EJVE\n\nApprove this harness on the website. This terminal will continue automatically.\n"
+        );
+        printed.lines().map(str::to_owned).collect()
+    }
+
+    /// A stand-in browser that notes each address it is handed, and takes it or not.
+    fn browser(handed: &std::rc::Rc<std::cell::RefCell<Vec<String>>>, takes: bool) -> Option<Browser> {
+        let handed = handed.clone();
+        Some(Box::new(move |url: &str| {
+            handed.borrow_mut().push(url.to_owned());
+            takes
+        }))
+    }
+
+    /// What the relay shows for `words`, line by line.
+    fn relayed(sign_in: &mut SignIn, words: &[String]) -> Vec<String> {
+        let mut shown = Vec::new();
+        for said in words {
+            sign_in.relay(said, &mut |line| shown.push(line));
+        }
+        shown
+    }
+
+    #[test]
+    fn the_sign_in_page_is_a_link_that_opens_once_in_the_browser() {
+        let server = "https://argon.yougori.com";
+        let page = "https://argon.yougori.com/#connect";
+        assert_eq!(sign_in_page(server), page);
+        let handed = std::rc::Rc::new(std::cell::RefCell::new(Vec::new()));
+        let mut sign_in = SignIn::new(server, browser(&handed, true));
+        let shown = relayed(&mut sign_in, &sign_in_words(page));
+        assert_eq!(*handed.borrow(), [page]);
+        // The words as they came, under the step; the page as a link the person can open, and a
+        // word that it opened. The code is still typed on the website.
+        assert_eq!(shown.len(), 5, "{shown:?}");
+        assert!(shown[0].ends_with("  Sign in to Inference Solver"), "{shown:?}");
+        assert!(shown[1].ends_with(&format!("  Open: {}", crate::cli_ui::link(page))), "{shown:?}");
+        assert!(shown[2].contains("Opened in your browser.") && shown[3].ends_with("  Enter code: GMM3-EJVE"), "{shown:?}");
+        assert!(shown[4].ends_with("This terminal will continue automatically."), "{shown:?}");
+        // A second sign-in in the same run (a key the website revoked) shows the link again but
+        // opens nothing more.
+        let again = relayed(&mut sign_in, &sign_in_words(page));
+        assert_eq!(handed.borrow().len(), 1);
+        assert!(again[1].contains(page) && !again.iter().any(|line| line.contains("Opened in your browser.")), "{again:?}");
+    }
+
+    #[test]
+    fn only_the_websites_own_sign_in_page_is_ever_opened() {
+        let server = "http://acme.localhost:8443";
+        let handed = std::rc::Rc::new(std::cell::RefCell::new(Vec::new()));
+        let mut sign_in = SignIn::new(server, browser(&handed, true));
+        // Another address, in an Open: line too, shows as words: never a link, never opened.
+        for other in [
+            "Open: https://evil.example/#connect",
+            "Open: http://acme.localhost:8443/#connect?code=GMM3-EJVE",
+            "Open: http://acme.localhost:8443",
+            "Open: HTTP://ACME.LOCALHOST:8443/#connect",
+            "See http://acme.localhost:8443/#connect",
+        ] {
+            let shown = relayed(&mut sign_in, &[other.to_owned()]);
+            assert!(handed.borrow().is_empty(), "{other}");
+            assert_eq!(shown.len(), 1, "{other}");
+            assert!(shown[0].ends_with(&format!("  {other}")), "{other}: {shown:?}");
+        }
+        // Control characters in the launcher's words never reach the terminal.
+        let shown = relayed(&mut sign_in, &["Open: \u{1b}]8;;https://evil.example\u{1b}\\x".to_owned()]);
+        assert!(!shown[0].contains("\u{1b}]8;;https://evil.example"), "{shown:?}");
+        // Its own page, given with the spacing the launcher may use, opens.
+        relayed(&mut sign_in, &["  Open:   http://acme.localhost:8443/#connect  ".to_owned()]);
+        assert_eq!(*handed.borrow(), ["http://acme.localhost:8443/#connect"]);
+    }
+
+    #[test]
+    fn a_browser_that_fails_or_a_script_leaves_the_link_alone() {
+        let server = "https://argon.yougori.com";
+        let page = sign_in_page(server);
+        // The browser did not take it: the link stays, with no word that it opened.
+        let handed = std::rc::Rc::new(std::cell::RefCell::new(Vec::new()));
+        let shown = relayed(&mut SignIn::new(server, browser(&handed, false)), &sign_in_words(&page));
+        assert_eq!(handed.borrow().len(), 1);
+        assert_eq!(shown.len(), 4);
+        assert!(shown[1].contains(&page) && !shown.iter().any(|line| line.contains("Opened in your browser.")), "{shown:?}");
+        // Without a browser (a script), the same lines and nothing opened.
+        assert_eq!(relayed(&mut SignIn::new(server, None), &sign_in_words(&page)), shown);
+        // Only a person at this terminal gets the browser: not --yes, not --no-browser.
+        let person = Permissions::default();
+        assert!(opens_browser(&person, &args(&["--no-tty"]), true));
+        assert!(!opens_browser(&person, &[], false));
+        assert!(!opens_browser(&Permissions { yes: true, ..Permissions::default() }, &[], true));
+        assert!(!opens_browser(&person, &args(&["--no-tty", "--no-browser"]), true));
+        // --no-browser is the launcher's own option too, passed on as it is.
+        let mut extra = args(&["--no-browser", "--model", "m"]);
+        assert!(!permissions(&mut extra).unwrap().yes);
+        assert_eq!(extra, args(&["--no-browser"]));
     }
     #[test]
     fn stages_only_bundled_client_and_keeps_server_as_data() {

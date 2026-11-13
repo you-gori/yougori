@@ -228,6 +228,12 @@ impl Drop for Wizard {
     }
 }
 
+/// Whether the prompts opened now offer Back: a [`Wizard`] step after one that asked something,
+/// or a step inside an outer wizard. Without it, Esc cancels and a step has nowhere to go back to.
+pub fn offers_back() -> bool {
+    BACK_OFFERED.load(Ordering::Relaxed)
+}
+
 /// Runs prompts that must not offer Back, such as a choice that already has its own way back.
 pub fn without_back<T>(prompts: impl FnOnce() -> T) -> T {
     let offered = BACK_OFFERED.swap(false, Ordering::Relaxed);
@@ -735,6 +741,84 @@ fn hyperlink(label: &str, url: &str, enabled: bool) -> String {
     if enabled && valid {
         format!("\x1b]8;;{url}\x1b\\{label}\x1b]8;;\x1b\\")
     } else { label }
+}
+
+/// A web address the person can open: a link where the terminal shows links, the address itself
+/// elsewhere. Only an http(s) address becomes a link.
+pub fn link(url: &str) -> String {
+    hyperlink(url, url, caps().live)
+}
+
+/// Opens a web address in the person's default browser, without waiting for the browser and
+/// without anything reaching this terminal: whether the browser was handed it. Only an http(s)
+/// address written with a web address's characters opens, and only where this session has a
+/// browser of its own. A failure is only `false`: the caller shows the address anyway.
+pub fn open_in_browser(url: &str) -> bool {
+    let set = |name: &str| std::env::var_os(name).is_some_and(|value| !value.is_empty());
+    web_address(url) && has_browser(&set) && hand_to_browser(url)
+}
+
+/// An http or https address without a login, written only with the characters of a web address
+/// (RFC 3986): no space, quote or other character that could break out of the quotes around it on
+/// a browser's command line.
+fn web_address(url: &str) -> bool {
+    url.bytes().all(|byte| byte.is_ascii_alphanumeric() || b"-._~:/?#[]@!$&'()*+,;=%".contains(&byte))
+        && reqwest::Url::parse(url).is_ok_and(|parsed| {
+            matches!(parsed.scheme(), "http" | "https") && parsed.username().is_empty() && parsed.password().is_none()
+        })
+}
+
+/// Whether this session has a browser to open: not one reached over SSH (there the address shows
+/// for the person to open on their own computer), and on Linux and other Unix systems a desktop
+/// (X11 or Wayland). `set` says whether an environment variable is set.
+fn has_browser(set: &dyn Fn(&str) -> bool) -> bool {
+    if set("SSH_CONNECTION") || set("SSH_TTY") {
+        return false;
+    }
+    cfg!(any(windows, target_os = "macos")) || set("DISPLAY") || set("WAYLAND_DISPLAY")
+}
+
+/// Hands the address to the default browser through the shell: the address is the item
+/// ShellExecute opens with its scheme's handler, never a command line, so nothing in it is read as
+/// a command or an option. Returns once the browser has it.
+#[cfg(windows)]
+fn hand_to_browser(url: &str) -> bool {
+    use std::os::windows::ffi::OsStrExt;
+    use windows_sys::Win32::UI::{Shell::ShellExecuteW, WindowsAndMessaging::SW_SHOWNORMAL};
+    let wide = |text: &str| std::ffi::OsStr::new(text).encode_wide().chain(std::iter::once(0)).collect::<Vec<u16>>();
+    let (verb, address) = (wide("open"), wide(url));
+    // SAFETY: both strings end with a NUL and outlive the call; no window, parameters or folder.
+    let started = unsafe { ShellExecuteW(std::ptr::null_mut(), verb.as_ptr(), address.as_ptr(), std::ptr::null(), std::ptr::null(), SW_SHOWNORMAL) };
+    // Above 32 it started; 32 or less is an error code.
+    started as usize > 32
+}
+
+/// Hands the address to `open` (macOS) or `xdg-open`, as one argument and never through a shell,
+/// in a process group of its own so Ctrl+C here never reaches it or a browser it starts, with
+/// nothing of it on this terminal. It is waited for briefly, for its answer; one still running
+/// then (xdg-open can wait for a browser it started) is left to run and reaped when it ends.
+#[cfg(unix)]
+fn hand_to_browser(url: &str) -> bool {
+    use std::os::unix::process::CommandExt;
+    use std::process::Stdio;
+    let opener = if cfg!(target_os = "macos") { "open" } else { "xdg-open" };
+    let mut command = std::process::Command::new(opener);
+    command.arg(url).stdin(Stdio::null()).stdout(Stdio::null()).stderr(Stdio::null()).process_group(0);
+    let Ok(mut child) = command.spawn() else { return false };
+    let until = Instant::now() + Duration::from_secs(2);
+    loop {
+        match child.try_wait() {
+            Ok(Some(status)) => return status.success(),
+            Ok(None) if Instant::now() < until => std::thread::sleep(Duration::from_millis(25)),
+            Ok(None) => {
+                std::thread::spawn(move || {
+                    let _ = child.wait();
+                });
+                return true;
+            }
+            Err(_) => return false,
+        }
+    }
 }
 
 fn link_row(label: &str, url: &str, columns: usize, enabled: bool) -> String {
@@ -3222,6 +3306,47 @@ pub(crate) mod tests {
         assert!(!fallback.contains("https://"));
         assert!(!hyperlink("bad", "https://example.com/\x1b]evil", true).contains("\x1b]"));
         assert!(!hyperlink("bad", "file:///private", true).contains("\x1b]"));
+    }
+
+    #[test]
+    fn a_sign_in_address_is_a_terminal_link_that_shows_the_whole_address() {
+        let page = "https://argon.yougori.com/#connect";
+        // Where the terminal shows links: the address, clickable to the address itself.
+        let clickable = hyperlink(page, page, true);
+        assert!(clickable.starts_with(&format!("\x1b]8;;{page}\x1b\\")) && clickable.ends_with("\x1b]8;;\x1b\\"), "{clickable:?}");
+        assert_eq!(width(&clickable), page.len());
+        // Elsewhere the address alone, which the person can still copy.
+        assert!(!hyperlink(page, page, false).contains("\x1b]"));
+        assert!(link(page).contains(page));
+        assert_eq!(link(page).contains("\x1b]8;;"), caps().live);
+    }
+
+    #[test]
+    fn only_a_plain_web_address_goes_to_the_browser() {
+        for good in ["https://argon.yougori.com/#connect", "http://acme.localhost:8443/#connect", "http://127.0.0.1:8080/#connect", "https://xn--bcher-kva.example/#connect"] {
+            assert!(web_address(good), "{good}");
+        }
+        // Not a web address, a login in it, or a character that could leave the quotes around it
+        // on a browser's command line (the url crate takes a quote in a host name).
+        for bad in [
+            "file:///C:/Windows/System32/calc.exe", "javascript:alert(1)", "ms-settings:privacy", "\\\\server\\share",
+            "https://user:key@argon.yougori.com/#connect", "https://a\"b.example/#connect", "https://argon.yougori.com/#connect \"--x\"",
+            "https://argon.yougori.com/\n", "https://a{b}.example/", "https://a`b.example/", "https://a|b.example/", "", "https://",
+        ] {
+            assert!(!web_address(bad), "{bad}");
+        }
+        assert!(!open_in_browser("file:///C:/Windows/System32/calc.exe"));
+    }
+
+    #[test]
+    fn a_browser_opens_only_where_this_session_has_one() {
+        let with = |names: &'static [&'static str]| move |name: &str| names.contains(&name);
+        // Over SSH the address shows for the person's own computer instead.
+        assert!(!has_browser(&with(&["SSH_CONNECTION", "DISPLAY"])));
+        assert!(!has_browser(&with(&["SSH_TTY", "WAYLAND_DISPLAY"])));
+        // A desktop has one everywhere; Windows and macOS always have a desktop.
+        assert!(has_browser(&with(&["DISPLAY"])) && has_browser(&with(&["WAYLAND_DISPLAY"])));
+        assert_eq!(has_browser(&with(&[])), cfg!(any(windows, target_os = "macos")));
     }
 
     #[test]

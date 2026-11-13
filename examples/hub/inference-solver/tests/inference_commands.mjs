@@ -12,7 +12,7 @@ test('every website install action uses Yougori directly', () => {
     const address = new URL(origin);
     assert.equal(context.installCommand('node', address), `yougori inference connect "${origin}"`);
     assert.equal(context.installCommand('pi', address), `yougori inference run pi --server "${origin}"`);
-    // Yougori's page: the command that asks which harness, then which model.
+    // Yougori's page: the command that starts Yougori, then asks which model.
     assert.equal(context.installCommand('yougori', address), `yougori inference run yougori --server "${origin}"`);
   }
   const compute = readFileSync(new URL('../site/compute-ui.js', import.meta.url), 'utf8');

@@ -60,6 +60,13 @@ class Launcher(unittest.TestCase):
             launched.update(positional=positional, keywords=keywords, environment=dict(os.environ))
             return 0
 
+        def run_session(name, server, key_file, model, workspace, interactive=True, **keywords):
+            # A run of the Yougori harness, kept as launch() would have been given it: the harness
+            # held is the image's, and run_session passes no tool arguments on.
+            launched.update(positional=(name, server, key_file, model, workspace, [], interactive),
+                            keywords={**keywords, "harness": name}, environment=dict(os.environ), session=True)
+            return 0
+
         def preflight(name, server, held=False):
             launched.setdefault("preflight", []).append((name, held))
             if refuse:
@@ -71,7 +78,7 @@ class Launcher(unittest.TestCase):
                 patch.object(solver, "private_folder", lambda path: path.mkdir(parents=True, exist_ok=True)), \
                 patch.object(vm_host, "preflight", preflight), \
                 patch.object(solver, "models", lambda server, key: list(catalog)), patch.object(solver, "launch", launch), \
-                contextlib.redirect_stdout(printed):
+                patch.object(solver, "run_session", run_session), contextlib.redirect_stdout(printed):
             code = solver.main()
         return code, launched, printed.getvalue()
 
@@ -85,6 +92,9 @@ class Launcher(unittest.TestCase):
         self.assertEqual(keywords["answers"], {"target": "practice", "depth": "safe", "login_user": "test@example.com"})
         self.assertEqual(keywords["secrets"], {"login_password": SECRET})
         self.assertIsNone(keywords["targets"])
+        # Its screen may switch to the harnesses this launcher knows (/harness), in this VM or a new one.
+        self.assertTrue(launched["session"])
+        self.assertTrue({"yougori", "opencode", "strix", "shannon"} <= keywords["known"])
         # Nothing this launcher starts inherits the secret, and no argument holds it.
         self.assertNotIn("YOUGORI_SECRET_LOGIN_PASSWORD", launched["environment"])
         self.assertNotIn(SECRET, json.dumps(launched["positional"], default=str))

@@ -124,6 +124,7 @@ impl App {
             }
         }
         match key.code {
+            KeyCode::Esc if matches!(self.phase, Phase::Changing { .. }) => self.effects.push(Effect::CancelSwitch),
             KeyCode::Esc => {
                 if !self.cancel() && self.scroll != Scroll::Follow {
                     self.scroll = Scroll::Follow;
@@ -170,7 +171,11 @@ impl App {
     pub fn paste(&mut self, text: &str) {
         self.dirty = true;
         self.quit_armed = None;
-        if self.overlay.is_some() || self.stopped() {
+        if let Some(overlay) = self.overlay.as_mut() {
+            overlay.paste(text);
+            return;
+        }
+        if self.stopped() {
             return;
         }
         if let Some(dialog) = self.dialogs.front_mut() {

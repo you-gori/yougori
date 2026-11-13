@@ -103,7 +103,7 @@ def profile(server):
     return root
 
 
-from vm_host import THIS_COMPUTER, launch, plain, unavailable
+from vm_host import THIS_COMPUTER, launch, plain, run_session, unavailable
 from profiles import NAMES, SECURITY
 
 # What the harness VM may reach. Never nothing: prompts and replies always go to this inference,
@@ -519,14 +519,17 @@ def main():
         return launch(args.harness, server, key_file, model, workspace, extra, not args.no_tty,
                       cpu=cpu, memory=memory, internet=internet == "full", sites=chosen_sites, targets=chosen_targets,
                       catalog=models)
-    return launch(name, server, key_file, model, workspace, [], not args.no_tty, cpu=cpu, memory=memory,
-                  internet=internet == "full", sites=chosen_sites, targets=chosen_targets,
-                  harness=name, answers=answers, secrets=secrets, images=images, catalog=models)
+    # Inside the Yougori harness the screen switches harness (/harness): in this VM, or in a new one
+    # this run starts, among the harnesses this launcher knows.
+    return run_session(name, server, key_file, model, workspace, not args.no_tty, cpu=cpu, memory=memory,
+                       internet=internet == "full", sites=chosen_sites, targets=chosen_targets,
+                       answers=answers, secrets=secrets, images=images, catalog=models, known=set(PACKAGES))
 
 
 def run():
     """The launcher's exit: main's code, or the reason it could not start, which is printed; 130
-    after a Ctrl+C, as a terminal reports it, with no traceback."""
+    after a Ctrl+C, as a terminal reports it, with no traceback. With YOUGORI_LAUNCHER_TRACE naming
+    a file, an unexpected failure's traceback (code lines only, never a value) is written there."""
     try:
         return main()
     except KeyboardInterrupt:
@@ -534,6 +537,13 @@ def run():
     except ValueError as error:
         return str(error)
     except (KeyError, OSError, subprocess.CalledProcessError, http.client.HTTPException):
+        trace = os.environ.get("YOUGORI_LAUNCHER_TRACE")
+        if trace:
+            import traceback
+            try:
+                Path(trace).write_text("".join(traceback.format_exc(limit=30)), encoding="utf-8")
+            except OSError:
+                pass
         return TROUBLE
 
 

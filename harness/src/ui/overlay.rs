@@ -1,7 +1,8 @@
 //! The screen's own panels, drawn at the bottom in the CLI's menu style (◆ title, │ rails,
-//! ● and ○ choices, └ key hints): the command palette, the model and mode pickers, confirmations
-//! and the keys help.
+//! ● and ○ choices, └ key hints): the command palette, the model and mode pickers, the /harness
+//! panel (switcher.rs), confirmations and the keys help.
 use super::input::Editor;
+use super::switcher::{Flow, FlowOutcome, Pending};
 use super::text::{self, pad, span, truncate, truncate_spans, wrap_text};
 use super::theme::Theme;
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
@@ -11,6 +12,8 @@ use ratatui::text::{Line, Span};
 /// What a palette entry does.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Action {
+    /// The /harness panel.
+    Harness,
     Model,
     Mode,
     /// A slash command sent to the engine (without the slash).
@@ -54,18 +57,22 @@ pub enum Which {
 
 pub enum Overlay {
     Palette { filter: Editor, items: Vec<Item>, selected: usize },
+    /// /harness: the harnesses, the chosen one's questions, a new VM's confirmation.
+    Switch(Box<Flow>),
     Picker { which: Which, title: String, choices: Vec<Choice>, selected: usize },
     Confirm { what: Confirmable, title: String, detail: String, yes: String },
     Keys { keys: Vec<(String, String)>, scroll: usize },
 }
 
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Debug, PartialEq)]
 pub enum Outcome {
     Stay,
     Close,
     Run(Action),
     Pick(Which, String),
     Confirmed(Confirmable),
+    /// /harness chose a harness and its answers: the switch starts.
+    Switch(Box<Pending>),
 }
 
 impl Overlay {
@@ -79,9 +86,27 @@ impl Overlay {
         Overlay::Picker { which, title: title.to_owned(), choices, selected }
     }
 
+    /// Text pasted into the panel: the palette's filter, or the field /harness is typing.
+    pub fn paste(&mut self, text: &str) {
+        match self {
+            Overlay::Palette { filter, items, selected } => {
+                let line: String = text.chars().filter(|c| !c.is_control()).collect();
+                filter.insert(&line);
+                reselect(selected, items, filter.text());
+            }
+            Overlay::Switch(flow) => flow.paste(text),
+            Overlay::Picker { .. } | Overlay::Confirm { .. } | Overlay::Keys { .. } => {}
+        }
+    }
+
     pub fn key(&mut self, key: KeyEvent) -> Outcome {
         let control = key.modifiers.contains(KeyModifiers::CONTROL);
         match self {
+            Overlay::Switch(flow) => match flow.key(key) {
+                FlowOutcome::Stay => Outcome::Stay,
+                FlowOutcome::Close => Outcome::Close,
+                FlowOutcome::Start(pending) => Outcome::Switch(pending),
+            },
             Overlay::Palette { filter, items, selected } => {
                 let visible: Vec<usize> = matching(items, filter.text());
                 match key.code {
@@ -186,6 +211,7 @@ impl Overlay {
     /// (row, column) when the panel takes text.
     pub fn lines(&self, theme: &Theme, width: usize, rows: usize) -> (Vec<Line<'static>>, Option<(usize, usize)>) {
         match self {
+            Overlay::Switch(flow) => flow.lines(theme, width, rows),
             Overlay::Palette { filter, items, selected } => {
                 let visible = matching(items, filter.text());
                 let mut body = Vec::new();

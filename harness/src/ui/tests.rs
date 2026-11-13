@@ -1767,3 +1767,164 @@ fn the_context_meter_counts_against_the_models_window_when_the_engine_reports_no
     let (_, _, status) = metered(32768, r#"{"type":"usage","context_window":1048576}"#);
     assert!(!status.contains("context"), "{status}");
 }
+
+// ---- Switching harness (/harness) ----
+
+fn switching_spec() -> EngineSpec {
+    let mut spec = coding_spec();
+    spec.session = serde_json::from_value(serde_json::json!({
+        "harnesses": [
+            {"id": "yougori", "name": "Yougori", "base": "base", "memory": 4, "ready": true},
+            {"id": "opencode", "name": "OpenCode", "base": "base", "memory": 4, "ready": true},
+            {"id": "kilo", "name": "Kilo Code", "base": "base", "memory": 4, "ready": true},
+            {"id": "plandex", "name": "Plandex", "base": "postgres", "memory": 4, "ready": true}
+        ],
+        "switch": ["python3", "/opt/solver/runtime.py", "switch"], "vm_base": "base", "vm_memory": 4,
+        "server": "https://argon.yougori.com"
+    }))
+    .unwrap();
+    spec
+}
+
+fn switch_effect(effects: Vec<Effect>) -> Option<super::switcher::Pending> {
+    effects.into_iter().find_map(|effect| match effect {
+        Effect::Switch(pending) => Some(*pending),
+        _ => None,
+    })
+}
+
+#[test]
+fn yougori_commands_come_first_and_never_reach_the_engine() {
+    let mut rig = Rig::new(switching_spec());
+    rig.ready();
+    rig.type_text("/");
+    let names: Vec<String> = rig.app.completions().iter().map(|c| c.name.clone()).collect();
+    assert_eq!(names, ["harness", "model", "help", "exit", "quit", "new", "sessions", "compact", "review"]);
+    rig.press(KeyCode::Backspace);
+    rig.prompt("/harness");
+    assert!(matches!(rig.app.overlay, Some(Overlay::Switch(_))));
+    let panel = buffer_text(&rig.buffer(100, 30));
+    assert!(panel.contains("Switch harness") && panel.contains("Kilo Code") && panel.contains("running now"), "{panel}");
+    rig.press(KeyCode::Esc);
+    assert!(rig.app.overlay.is_none());
+    rig.prompt("/model");
+    assert!(matches!(rig.app.overlay, Some(Overlay::Picker { .. })));
+    rig.press(KeyCode::Esc);
+    rig.prompt("/model gpt-oss-20b");
+    assert!(matches!(rig.app.overlay, Some(Overlay::Confirm { .. })), "a model that restarts the engine asks first");
+    rig.press(KeyCode::Esc);
+    rig.prompt("/model nope");
+    rig.prompt("/help");
+    assert!(matches!(rig.app.overlay, Some(Overlay::Keys { .. })));
+    rig.press(KeyCode::Esc);
+    assert!(rig.sent().is_empty(), "none of these went to the engine");
+    assert!(buffer_text(&rig.buffer(100, 30)).contains("There is no model nope here."));
+    // The engine's own commands still go to it, and /exit ends the session.
+    rig.prompt("/new");
+    assert_eq!(rig.sent(), [Command::Prompt { text: "/new".into() }]);
+    rig.event(r#"{"type":"turn_end","reason":"end_turn"}"#);
+    rig.prompt("/exit");
+    assert!(rig.effects().contains(&Effect::Quit));
+}
+
+#[test]
+fn choosing_a_harness_starts_the_switch_and_esc_stops_it() {
+    let mut rig = Rig::new(switching_spec());
+    rig.ready();
+    rig.prompt("/harness kilo");
+    let pending = switch_effect(rig.effects()).expect("the switch starts");
+    assert_eq!(
+        pending.request(),
+        serde_json::json!({"harness": "kilo", "model": "qwen3-coder-30b", "answers": {}, "mode": "in-place"})
+    );
+    assert!(matches!(&rig.app.phase, Phase::Changing { name, .. } if name == "Kilo Code"));
+    rig.app.change_step("Downloading Kilo Code: 50% (75 of 151 MB)");
+    let screen = buffer_text(&rig.buffer(100, 30));
+    assert!(screen.contains("Switching to Kilo Code: Downloading Kilo Code: 50%"), "{screen}");
+    assert!(screen.contains("switching harness") && screen.contains("esc to stop"), "{screen}");
+    rig.press(KeyCode::Esc);
+    assert_eq!(rig.effects(), [Effect::CancelSwitch]);
+    // A prompt typed meanwhile waits for the next harness.
+    rig.prompt("hello");
+    assert_eq!(rig.app.queued, ["hello"]);
+    // In place, a failure says why; the run loop starts the harness before again.
+    assert!(rig.app.change_failed("Not published.", rig.now));
+    assert!(matches!(rig.app.phase, Phase::Starting { .. }));
+    assert!(buffer_text(&rig.buffer(100, 30)).contains("Could not switch to Kilo Code: Not published."));
+}
+
+#[test]
+fn a_new_vm_is_confirmed_and_a_failed_one_leaves_the_harness_running() {
+    let mut rig = Rig::new(switching_spec());
+    rig.ready();
+    rig.prompt("/harness plandex");
+    let panel = buffer_text(&rig.buffer(100, 30));
+    assert!(panel.contains("Start Plandex in a new VM?") && panel.contains("it needs PostgreSQL"), "{panel}");
+    rig.press(KeyCode::Enter);
+    let pending = switch_effect(rig.effects()).expect("the switch starts");
+    assert_eq!(pending.request()["mode"], "new-vm");
+    assert!(matches!(rig.app.phase, Phase::Changing { .. }));
+    assert!(!rig.app.change_failed("This inference does not offer Plandex here.", rig.now));
+    assert_eq!(rig.app.phase, Phase::Ready, "the engine kept running");
+}
+
+#[test]
+fn the_conversation_goes_on_in_the_next_harness_screen() {
+    let mut rig = Rig::new(switching_spec());
+    rig.ready().prompt("first question");
+    rig.event(r#"{"type":"message","message":"m1","text":"First answer."}"#)
+        .event(r#"{"type":"turn_end","reason":"end_turn"}"#);
+    let mut next = switching_spec();
+    next.harness = "kilo".into();
+    next.name = "Kilo Code".into();
+    let carry = rig.app.carry(&next);
+    assert_eq!(carry.note, "Kilo Code · qwen3-coder-30b");
+    let mut after = Rig::new(next);
+    after.app.carried(carry);
+    after.ready();
+    let screen = buffer_text(&after.buffer(100, 30));
+    assert!(screen.contains("First answer.") && screen.contains("Kilo Code · qwen3-coder-30b"), "{screen}");
+    after.press(KeyCode::Up);
+    assert_eq!(after.app.input.text(), "first question", "the prompts sent come along");
+}
+
+#[test]
+fn a_session_from_an_older_launcher_says_how_to_switch() {
+    let mut rig = Rig::new(coding_spec());
+    rig.ready();
+    rig.prompt("/harness");
+    assert!(rig.app.overlay.is_none() && rig.sent().is_empty());
+    assert!(buffer_text(&rig.buffer(100, 30)).contains("This Yougori cannot switch harnesses here."));
+    let palette = rig.app.palette();
+    let harness = palette.iter().find(|item| item.label == "Switch harness").unwrap();
+    assert!(!harness.enabled && harness.hint == "needs a newer Yougori");
+}
+
+#[test]
+fn the_terminal_pane_switches_harness_from_its_palette() {
+    let t0 = Instant::now();
+    let mut spec = pane_spec(vec!["aider".into()]);
+    spec.session = switching_spec().session;
+    let mut pane = Pane::new(spec, Theme::new(Depth::True), Masker::default(), 100, 30, t0);
+    pane.phase = PanePhase::Running { since: t0 };
+    pane.key(KeyEvent::new(KeyCode::Char('p'), KeyModifiers::CONTROL), t0);
+    let text = pane_text(&mut pane, 100, 30, t0);
+    assert!(text.contains("Switch harness"), "{text}");
+    // Switch harness is the palette's first entry, where the cursor starts.
+    pane.key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE), t0);
+    assert!(matches!(pane.overlay, Some(Overlay::Switch(_))));
+    for c in "kilo".chars() {
+        pane.key(KeyEvent::new(KeyCode::Char(c), KeyModifiers::NONE), t0);
+    }
+    pane.key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE), t0);
+    assert!(matches!(pane.effects.as_slice(), [pane::PaneEffect::Switch(_)]));
+    assert!(matches!(&pane.phase, PanePhase::Changing { name, .. } if name == "Kilo Code"));
+    let text = pane_text(&mut pane, 100, 30, t0);
+    assert!(text.contains("switching harness · esc to stop"), "{text}");
+    pane.effects.clear();
+    pane.key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE), t0);
+    assert_eq!(pane.effects, [pane::PaneEffect::CancelSwitch]);
+    // A failure in place: the harness before starts again.
+    assert!(pane.change_failed("Not published.", t0));
+    assert!(matches!(pane.phase, PanePhase::Starting { .. }));
+}

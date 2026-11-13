@@ -74,11 +74,13 @@ try {
   assert.equal(await page.locator('#harness-install-inline .install-steps > li').count(), 3);
   const startSteps = await page.locator('#harness-install-inline .install-steps').textContent();
   // The fixture publishes the Yougori harness's base, so its own agent is ready with the others.
-  assert.ok(startSteps.includes('Yougori asks which harness, its own agent or one of the ready ones below, then which model'), startSteps);
+  assert.ok(startSteps.includes('Yougori starts with its own agent: it asks which model, then what the VM may use'), startSteps);
+  assert.ok(startSteps.includes('In its chat, /harness switches to any ready harness below and /model to another model.'), startSteps);
   assert.ok(startSteps.includes('starts automatically after installation'), startSteps);
   // A coding harness is asked what its VM may reach; a security harness is not, and its About banner says
   // the same: it reaches only its target and this inference.
-  assert.ok(startSteps.includes('Before the VM starts, it asks what a coding harness may use: a project folder (copied in; changes come back only after your review), what it can reach (only this inference, sites you choose, or the whole internet as well), and CPU and memory. A security harness is not asked what it can reach: it reaches only its target and this inference.'), startSteps);
+  assert.ok(startSteps.includes('what the VM may use: a project folder (copied in; changes come back only after your review), what it can reach (only this inference, sites you choose, or the whole internet as well), and CPU and memory. In its chat'), startSteps);
+  assert.ok(startSteps.includes('A security harness asks its own questions there and reaches only its target and this inference.'), startSteps);
   assert.equal(await page.locator('.detail-side .small-banner').textContent(), `Blue terminal, connected to ${new URL(url).host}. A coding harness reaches only this inference unless you choose more. A security harness reaches only its target and this inference.`);
   // So do its requirements, which cover both kinds (app.js REQUIREMENTS); a coding harness's own page says
   // only what its VM reaches (REQUIREMENTS_CODING, on Pi's and Codex's pages below).
@@ -87,10 +89,10 @@ try {
   assert.equal(await page.locator('#harness-install-inline .install-details .hint').textContent(), `${requirements} Each harness's page, linked from its name below, has its source setup.`);
   assert.equal(await page.locator('dialog[open]').count(), 0);
   await page.getByRole('button', { name: 'Copy start command', exact:true }).waitFor();
-  // A harness's own command starts the list on it; --yes asks nothing, so it needs the model when there are
+  // A harness's own command starts Yougori with it inside; --yes asks nothing, so it needs the model when there are
   // several and the answers the harness's page names.
   const againYougori = await page.locator('#again-hint').textContent();
-  for (const words of ["Each harness's Copy command below copies its own command, which starts the list on that harness.", 'To ask nothing, add --yes to it, with --model ID when there is more than one model and the answers its page names.']) assert.ok(againYougori.includes(words), againYougori);
+  for (const words of ["Each harness's Copy command below starts Yougori with that harness inside.", 'To ask nothing, add --yes to it, with --model ID when there is more than one model and the answers its page names.']) assert.ok(againYougori.includes(words), againYougori);
   // Inside: the harnesses offered here, coding then security as the command lists them, one row each with
   // what it asks and a copy of its own command, under the steps, Open it again and the requirements. The page
   // shows the command itself only at the top. Yougori's own agent is not listed inside itself.
@@ -138,10 +140,11 @@ try {
   assert.equal(await page.locator('#launch-code').textContent(), `yougori inference run pi --server "${url}"`);
   assert.ok((await page.locator('#harness-install-inline').textContent()).includes('Pi starts automatically after installation'));
   assert.equal(await page.locator('#harness-install-inline .install-steps > li').count(), 3);
-  // Its command starts the list of harnesses on Pi. With --yes it keeps the defaults, given the model when
+  // Its command starts Yougori with Pi inside. With --yes it keeps the defaults, given the model when
   // there are several.
   const piSteps = await page.locator('#harness-install-inline .install-steps').textContent();
-  assert.ok(piSteps.includes('Yougori asks which harness, with Pi already selected, then which model. Before the VM starts, it asks what Pi may use: a project folder'), piSteps);
+  assert.ok(piSteps.includes('Yougori starts with Pi inside: it asks which model. Before the VM starts, it asks what Pi may use: a project folder'), piSteps);
+  assert.ok(piSteps.includes('In its chat, /harness switches to another harness.'), piSteps);
   // A coding harness is still asked what its VM may reach.
   assert.ok(piSteps.includes('what it can reach (only this inference, sites you choose, or the whole internet as well), and CPU and memory.'), piSteps);
   assert.equal(await page.locator('.detail-side .small-banner').textContent(), `Blue terminal, connected to ${new URL(url).host}. The VM reaches only this inference unless you choose more.`);
@@ -172,7 +175,7 @@ try {
   // needs the permission yes.
   assert.ok((await page.locator('#harness-install-inline').textContent()).includes('without a yes, nothing starts'));
   const pentagiSteps = await page.locator('#harness-install-inline .install-steps').textContent();
-  for (const words of ["Yougori asks which harness, with PentAGI already selected, then which model, then PentAGI's own questions.", 'it asks what PentAGI may use: a folder for the report (copied in; the report comes back only after your review), and CPU and memory. If you give the source code, the report comes back to its folder instead.']) assert.ok(pentagiSteps.includes(words), pentagiSteps);
+  for (const words of ["Yougori starts with PentAGI inside: it asks which model, then PentAGI's own questions.", 'it asks what PentAGI may use: a folder for the report (copied in; the report comes back only after your review), and CPU and memory. If you give the source code, the report comes back to its folder instead.']) assert.ok(pentagiSteps.includes(words), pentagiSteps);
   // Yougori asks a security harness nothing about what its VM may reach: only the target and this
   // inference, as its note, its About panel and its requirements say. The requirements sit beside the
   // source setup, which holds the VM to the target as the Yougori command does (solver.py, held_to_target).

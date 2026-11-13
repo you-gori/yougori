@@ -30,6 +30,7 @@ pub(crate) fn spec(dir: &std::path::Path) -> EngineSpec {
         answers: Value::Null,
         reach: Default::default(),
         state_dir: dir.join("state"),
+        session: Default::default(),
     }
 }
 

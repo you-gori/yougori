@@ -46,8 +46,21 @@ impl Vault for FakeVault {
     }
 }
 
+/// A free local port for a hub, which binds it moments after this returns. It is picked outside the
+/// ephemeral ranges (Linux 32768-60999, Windows 49152-65535): the ports other tests' connections and
+/// port-0 listeners are handed come from those, so none of them can take this one in between (the
+/// first Windows run of 1.2.5 lost 55857 that way). A port is handed out once per test run, so a
+/// test asking for two never gets the same one twice, and one taken anyway means another.
 fn free_port() -> u16 {
-    std::net::TcpListener::bind("127.0.0.1:0").unwrap().local_addr().unwrap().port()
+    use std::hash::{BuildHasher, Hasher};
+    static GIVEN: std::sync::Mutex<std::collections::BTreeSet<u16>> = std::sync::Mutex::new(std::collections::BTreeSet::new());
+    loop {
+        let random = std::collections::hash_map::RandomState::new().build_hasher().finish();
+        let port = 20_000 + (random % 12_000) as u16;
+        if GIVEN.lock().unwrap().insert(port) && std::net::TcpListener::bind(("127.0.0.1", port)).is_ok() {
+            return port;
+        }
+    }
 }
 
 /// Gives hubs that were just dropped the moment they need to let go of their ports.

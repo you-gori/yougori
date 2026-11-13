@@ -406,6 +406,8 @@ NAMES = {"yougori": "Yougori", "opencode": "OpenCode", "kilo": "Kilo", "codex": 
          "hexstrike": "HexStrike"}
 SECURITY = {"strix", "shannon", "pentagi", "pentestgpt", "hexstrike"}
 RESPEC = ["python3", "/opt/solver/runtime.py", "engine"]
+# The screen's switch command (its /harness): runtime.py switch, given the request on stdin.
+SWITCH = ["python3", "/opt/solver/runtime.py", "switch"]
 # Passed on from the VM so a harness reaches the chosen sites through the VM's proxy.
 PASSED_ON = ("HTTPS_PROXY", "https_proxy", "HTTP_PROXY", "http_proxy", "NO_PROXY", "no_proxy", "SOLVER_EMPTY_WORKSPACE")
 PRACTICE_URL = "http://127.0.0.1:8000"

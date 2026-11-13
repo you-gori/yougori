@@ -4,6 +4,7 @@ use super::dialog::Dialog;
 use super::input::{Editor, History};
 use super::mask::Masker;
 use super::overlay::{Action, Choice, Confirmable, Item, Outcome, Overlay, Which};
+use super::switcher::{Flow, FlowOutcome, Mode as Where, Pending};
 use super::text::clean;
 use super::theme::Theme;
 use super::transcript::{Key, Transcript};
@@ -28,6 +29,12 @@ pub enum Phase {
         since: Instant,
         step: String,
     },
+    /// Switching harness (/harness): `step` is the switch's latest progress.
+    Changing {
+        name: String,
+        since: Instant,
+        step: String,
+    },
     /// The engine stopped or could not start; the screen stays until the person quits.
     Stopped {
         title: String,
@@ -48,6 +55,10 @@ pub enum Effect {
     Start,
     /// Switch to this model by restarting the engine through the spec's `respec`.
     Restart(String),
+    /// Switch harness (/harness): in place the engine stops first, then the switch command runs.
+    Switch(Box<Pending>),
+    /// Esc while switching harness: the switch command is asked to stop.
+    CancelSwitch,
     /// Paint the whole screen again.
     Redraw,
     Quit,
@@ -145,7 +156,22 @@ pub struct App {
     echo: Option<String>,
     /// While a restart switch is prepared: the phase to go back to if the new model cannot be.
     switch_from: Option<Phase>,
+    /// Yougori's own slash commands, which the screen handles itself (never the engine).
+    pub own: Vec<SlashCommand>,
+    /// The harness switch under way, and the phase to go back to when a new VM's switch fails
+    /// (the engine kept running).
+    pub change: Option<Box<Pending>>,
+    change_from: Option<Phase>,
 }
+
+/// Yougori's own slash commands: name, what it does, what to type after it.
+pub const OWN_COMMANDS: [(&str, &str, Option<&str>); 5] = [
+    ("harness", "switch to another harness", Some("name")),
+    ("model", "switch model", Some("id")),
+    ("help", "commands and keys", None),
+    ("exit", "end the session", None),
+    ("quit", "end the session", None),
+];
 
 impl App {
     pub fn new(spec: EngineSpec, theme: Theme, masker: Masker, owns_engine: bool, now: Instant) -> App {
@@ -194,6 +220,16 @@ impl App {
             shift_enter: true,
             echo: None,
             switch_from: None,
+            own: OWN_COMMANDS
+                .iter()
+                .map(|(name, what, hint)| SlashCommand {
+                    name: (*name).to_owned(),
+                    description: (*what).to_owned(),
+                    hint: hint.map(str::to_owned),
+                })
+                .collect(),
+            change: None,
+            change_from: None,
         }
     }
 
@@ -219,7 +255,10 @@ impl App {
     pub fn animating(&self, now: Instant) -> bool {
         // The quit hint gets one more frame after it expires, to take it away.
         self.busy()
-            || matches!(self.phase, Phase::Starting { .. } | Phase::Switching { .. } | Phase::Quitting { .. })
+            || matches!(
+                self.phase,
+                Phase::Starting { .. } | Phase::Switching { .. } | Phase::Changing { .. } | Phase::Quitting { .. }
+            )
             || self
                 .quit_armed
                 .is_some_and(|t| now.saturating_duration_since(t) < QUIT_WINDOW + Duration::from_millis(300))
@@ -529,9 +568,13 @@ impl App {
         self.history.push(&text);
         self.input.clear();
         self.completion_closed = None;
+        if self.own_command(&text, now) {
+            self.dirty = true;
+            return;
+        }
         match self.phase {
             Phase::Ready if self.turn.is_none() => self.send_prompt(text, now),
-            Phase::Ready | Phase::Starting { .. } | Phase::Switching { .. } => {
+            Phase::Ready | Phase::Starting { .. } | Phase::Switching { .. } | Phase::Changing { .. } => {
                 self.queued.push_back(text);
             }
             Phase::Stopped { .. } | Phase::Quitting { .. } => {
@@ -539,6 +582,117 @@ impl App {
             }
         }
         self.dirty = true;
+    }
+
+    /// Yougori's own slash commands (OWN_COMMANDS), handled here and never sent to the engine:
+    /// whether `text` was one.
+    fn own_command(&mut self, text: &str, now: Instant) -> bool {
+        let Some(rest) = text.trim().strip_prefix('/') else { return false };
+        let (name, argument) = match rest.split_once(char::is_whitespace) {
+            Some((name, argument)) => (name, argument.trim()),
+            None => (rest, ""),
+        };
+        match name.to_ascii_lowercase().as_str() {
+            "harness" => self.open_harness(Some(argument), now),
+            "model" if argument.is_empty() => self.overlay = Some(self.model_picker()),
+            "model" => match self.models.iter().find(|model| model.eq_ignore_ascii_case(argument)).cloned() {
+                Some(model) => self.choose_model(model, now),
+                None => self.transcript.notice(Level::Warn, &format!("There is no model {argument} here. /model lists them.")),
+            },
+            "help" => self.overlay = Some(Overlay::Keys { keys: keys_help(self.shift_enter), scroll: 0 }),
+            "exit" | "quit" => self.request_quit(),
+            _ => return false,
+        }
+        true
+    }
+
+    /// Opens the /harness panel, or goes straight to `named` (its questions, or the switch when it
+    /// asks none). Not while the engine starts or switches: wait for it.
+    pub fn open_harness(&mut self, named: Option<&str>, now: Instant) {
+        self.overlay = None;
+        if !matches!(self.phase, Phase::Ready | Phase::Stopped { .. }) {
+            self.transcript.notice(Level::Info, &format!("Wait until {} has started to switch harness.", self.name));
+            return;
+        }
+        match Flow::open(&self.spec, &self.model, named.filter(|named| !named.trim().is_empty())) {
+            Ok((_, FlowOutcome::Start(pending))) => self.start_switch(*pending, now),
+            Ok((flow, _)) => self.overlay = Some(Overlay::Switch(Box::new(flow))),
+            Err(error) => self.transcript.notice(Level::Warn, &error),
+        }
+    }
+
+    /// The switch starts: in place the engine stops for it (its turn and open requests end with
+    /// it), a new VM's switch leaves it running until the launcher takes over. Secrets typed for
+    /// the next harness stay in this process's memory, for its engine and the masking.
+    pub fn start_switch(&mut self, pending: Pending, now: Instant) {
+        self.overlay = None;
+        for (id, value) in &pending.secrets {
+            crate::spec::remember_secret(id, value);
+        }
+        if pending.mode == Where::InPlace {
+            if self.turn.take().is_some() || self.transcript.live() {
+                self.transcript.end_turn();
+            }
+            self.dialogs.clear();
+            self.change_from = None;
+        } else {
+            self.change_from = Some(self.phase.clone());
+        }
+        let step = if pending.mode == Where::InPlace { format!("stopping {}", self.name) } else { "asking for a new VM".into() };
+        self.phase = Phase::Changing { name: pending.entry.name.clone(), since: now, step };
+        self.change = Some(Box::new(pending.clone()));
+        self.effects.push(Effect::Switch(Box::new(pending)));
+        self.dirty = true;
+    }
+
+    /// The switch's latest progress.
+    pub fn change_step(&mut self, step: &str) {
+        if let Phase::Changing { step: current, .. } = &mut self.phase {
+            *current = step.to_owned();
+        }
+        self.dirty = true;
+    }
+
+    /// The switch failed: said in the conversation. A new VM's switch goes back to how it was (the
+    /// engine kept running); in place, the run loop starts the harness before again, or Yougori's
+    /// own agent when the harness before is gone. Whether it was in place.
+    pub fn change_failed(&mut self, reason: &str, now: Instant) -> bool {
+        let pending = self.change.take();
+        let name = pending.as_ref().map_or_else(|| "the harness".to_owned(), |p| p.entry.name.clone());
+        self.transcript.notice(Level::Error, &format!("Could not switch to {name}: {}", clean(reason).trim()));
+        let in_place = pending.as_ref().is_none_or(|p| p.mode == Where::InPlace);
+        if in_place {
+            self.phase = Phase::Starting { since: now };
+        } else if matches!(self.phase, Phase::Changing { .. }) {
+            self.phase = self.change_from.take().unwrap_or(Phase::Ready);
+            self.send_queued(now);
+        }
+        self.dirty = true;
+        in_place
+    }
+
+    /// What the next screen keeps after a switch to `next`: the conversation so far, the prompts
+    /// sent and those still queued, under a divider naming the next harness and model.
+    pub fn carry(&mut self, next: &EngineSpec) -> super::Carry {
+        super::Carry {
+            transcript: Some(std::mem::take(&mut self.transcript)),
+            history: std::mem::take(&mut self.history),
+            queued: std::mem::take(&mut self.queued),
+            note: format!("{} · {}", next.name, next.model),
+        }
+    }
+
+    /// What the screen before handed on (a switch): its conversation goes on here.
+    pub fn carried(&mut self, carry: super::Carry) {
+        if let Some(transcript) = carry.transcript {
+            self.transcript = transcript;
+            self.conversed = true;
+        }
+        self.history = carry.history;
+        self.queued = carry.queued;
+        if !carry.note.is_empty() {
+            self.transcript.divider(&carry.note);
+        }
     }
 
     /// Esc while work runs: asks the engine to stop the turn.
@@ -587,7 +741,15 @@ impl App {
             enabled: self.offers(name) && self.phase == Phase::Ready,
         };
         let mode_name = self.mode_name().unwrap_or_default();
+        let switchable = self.spec.session.switchable();
         let mut items = vec![
+            Item {
+                action: Action::Harness,
+                label: "Switch harness".into(),
+                hint: if switchable { format!("{} · /harness", self.name) } else { "needs a newer Yougori".into() },
+                // Not while the engine starts or switches: wait for it.
+                enabled: switchable && matches!(self.phase, Phase::Ready | Phase::Stopped { .. }),
+            },
             Item {
                 action: Action::Model,
                 label: "Switch model".into(),
@@ -727,6 +889,7 @@ impl App {
             Outcome::Run(action) => {
                 self.overlay = None;
                 match action {
+                    Action::Harness => self.open_harness(None, now),
                     Action::Model => self.overlay = Some(self.model_picker()),
                     Action::Mode => self.overlay = Some(self.mode_picker()),
                     Action::Slash(name) => {
@@ -757,10 +920,12 @@ impl App {
                 self.overlay = None;
                 self.switch_by_restart(model, now);
             }
+            Outcome::Switch(pending) => self.start_switch(*pending, now),
         }
     }
 
-    /// The slash commands matching what is typed, while a command name is being typed.
+    /// The slash commands matching what is typed, while a command name is being typed: Yougori's
+    /// own first, then the engine's (one with the name of Yougori's is Yougori's).
     pub fn completions(&self) -> Vec<&SlashCommand> {
         let text = self.input.text();
         if !text.starts_with('/')
@@ -770,11 +935,13 @@ impl App {
             return Vec::new();
         }
         let typed = text[1..].to_lowercase();
+        let engine = self.commands.iter().filter(|c| !self.own.iter().any(|own| own.name == c.name));
+        let all: Vec<&SlashCommand> = self.own.iter().chain(engine).collect();
         let mut starts: Vec<&SlashCommand> =
-            self.commands.iter().filter(|c| c.name.to_lowercase().starts_with(&typed)).collect();
-        let contains = self
-            .commands
+            all.iter().copied().filter(|c| c.name.to_lowercase().starts_with(&typed)).collect();
+        let contains = all
             .iter()
+            .copied()
             .filter(|c| !c.name.to_lowercase().starts_with(&typed) && c.name.to_lowercase().contains(&typed));
         starts.extend(contains);
         starts
@@ -863,9 +1030,13 @@ pub fn keys_help(shift_enter: bool) -> Vec<(String, String)> {
         ("↑ ↓", "earlier prompts at the first or last line"),
         ("esc", "stop the turn"),
         ("ctrl+c", "clear the box or stop; twice to quit"),
-        ("ctrl+p", "commands: model, mode, sessions, keys"),
+        ("ctrl+p", "commands: harness, model, mode, sessions, keys"),
         ("tab", "next mode (when the box is empty)"),
-        ("/", "the engine's commands"),
+        ("/", "commands: Yougori's, then the harness's own"),
+        ("/harness", "switch to another harness (/harness NAME)"),
+        ("/model", "switch model (/model ID)"),
+        ("/help", "these keys and commands"),
+        ("/exit", "end the session"),
         ("pgup pgdn", "scroll the conversation"),
         ("end", "follow the newest output again"),
         ("ctrl+o", "show or hide thinking and full output"),

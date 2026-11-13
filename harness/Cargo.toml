@@ -1,6 +1,6 @@
 [package]
 name = "yougori-harness"
-version = "1.2.5"
+version = "1.2.6"
 edition = "2021"
 description = "The Yougori harness: our own terminal agent, holding every inference harness behind one screen"
 license = "AGPL-3.0-only"

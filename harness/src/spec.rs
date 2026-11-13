@@ -72,6 +72,61 @@ pub struct EngineSpec {
     pub reach: Reach,
     /// Folder for this harness's own state (sessions, logs), inside the VM's home.
     pub state_dir: PathBuf,
+    /// What the screen needs to switch harness (/harness), from the launcher; empty in specs
+    /// from an older launcher or image.
+    #[serde(flatten)]
+    pub session: Session,
+}
+
+/// The harnesses a session may switch to and what the switch command needs (runtime.py writes
+/// them from what the launcher told the VM).
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+pub struct Session {
+    /// Yougori's own agent first, then the coding and the security harnesses, as listed.
+    #[serde(default)]
+    pub harnesses: Vec<HarnessChoice>,
+    /// The switch command (`runtime.py switch`): the request on stdin, the next spec on stdout.
+    #[serde(default)]
+    pub switch: Vec<String>,
+    /// The base image this VM started on, and its memory in GB.
+    #[serde(default)]
+    pub vm_base: String,
+    #[serde(default)]
+    pub vm_memory: u32,
+    /// The inference's address, for the command that starts another session.
+    #[serde(default)]
+    pub server: String,
+}
+
+/// A harness this session may switch to, as the website lists it.
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+pub struct HarnessChoice {
+    pub id: String,
+    pub name: String,
+    #[serde(default = "coding")]
+    pub category: String,
+    #[serde(default)]
+    pub description: String,
+    /// Its own questions, as the website describes them (asked with the CLI's meaning).
+    #[serde(default)]
+    pub questions: Vec<Value>,
+    /// The base image it starts on, and the memory it needs in GB.
+    #[serde(default)]
+    pub base: String,
+    #[serde(default)]
+    pub memory: u32,
+    #[serde(default)]
+    pub ready: bool,
+    /// Why it cannot start, when it cannot.
+    #[serde(default)]
+    pub reason: String,
+}
+
+impl Session {
+    /// Whether this session can switch harness here.
+    pub fn switchable(&self) -> bool {
+        !self.switch.is_empty() && !self.harnesses.is_empty()
+    }
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -169,17 +224,36 @@ fn ready_seconds() -> u64 {
     120
 }
 
-/// The value of a secret setup answer, from `YOUGORI_SECRET_<ID>`.
+/// Secret answers the person typed in the screen (a harness switched to with /harness), by answer
+/// id: in this process's memory only, never in the environment, a file or a spec.
+fn typed() -> &'static std::sync::Mutex<BTreeMap<String, String>> {
+    static TYPED: std::sync::OnceLock<std::sync::Mutex<BTreeMap<String, String>>> = std::sync::OnceLock::new();
+    TYPED.get_or_init(Default::default)
+}
+
+/// Keeps a secret answer typed in the screen, for the engine it goes to and the masking.
+pub fn remember_secret(id: &str, value: &str) {
+    if let Ok(mut typed) = typed().lock() {
+        typed.insert(id.to_ascii_lowercase(), value.to_owned());
+    }
+}
+
+/// The value of a secret setup answer: typed in the screen, or from `YOUGORI_SECRET_<ID>`.
 pub fn secret(id: &str) -> Option<String> {
-    std::env::var(format!("YOUGORI_SECRET_{}", id.to_ascii_uppercase())).ok().filter(|v| !v.is_empty())
+    let typed = typed().lock().ok().and_then(|typed| typed.get(&id.to_ascii_lowercase()).cloned());
+    typed.or_else(|| std::env::var(format!("YOUGORI_SECRET_{}", id.to_ascii_uppercase())).ok()).filter(|v| !v.is_empty())
 }
 
 /// Every secret setup answer this process holds, to mask them in what the screen shows.
 pub fn secrets() -> Vec<String> {
-    std::env::vars()
+    let mut found: Vec<String> = std::env::vars()
         .filter(|(name, value)| name.starts_with("YOUGORI_SECRET_") && value.chars().count() >= 4)
         .map(|(_, value)| value)
-        .collect()
+        .collect();
+    if let Ok(typed) = typed().lock() {
+        found.extend(typed.values().filter(|value| value.chars().count() >= 4).cloned());
+    }
+    found
 }
 
 impl EngineSpec {

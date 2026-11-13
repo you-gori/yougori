@@ -187,6 +187,11 @@ fn header(app: &App, width: usize, now: Instant) -> Vec<Line<'static>> {
             span(format!(" Switching to {model}: {}…", step.to_lowercase()), Style::default()),
             span(format!("  {}", clock(now.saturating_duration_since(*since))), theme.muted()),
         ],
+        Phase::Changing { name, since, step } => vec![
+            spin(app, now),
+            span(format!(" Switching to {name}: {}", masker.mask(step)), Style::default()),
+            span(format!("  {}", clock(now.saturating_duration_since(*since))), theme.muted()),
+        ],
         Phase::Quitting { .. } => vec![spin(app, now), span(format!(" Stopping {}…", app.name), Style::default())],
         // The bottom panel says how it stopped; the engine's own line stays.
         Phase::Stopped { .. } | Phase::Ready => match &app.info {
@@ -271,6 +276,14 @@ fn status(app: &App, width: usize, now: Instant) -> Line<'static> {
                 activity.extend([
                     spin(app, now),
                     span(format!(" switching model {}", clock(now.saturating_duration_since(*since))), theme.muted()),
+                ]);
+            }
+            Phase::Changing { since, .. } => {
+                activity.extend([
+                    spin(app, now),
+                    span(format!(" switching harness {}", clock(now.saturating_duration_since(*since))), theme.muted()),
+                    sep(),
+                    span("esc to stop", theme.muted()),
                 ]);
             }
             Phase::Quitting { .. } => activity.extend([spin(app, now), span(" stopping", theme.muted())]),
