@@ -7,6 +7,7 @@ import threading
 import time
 from chain import address, evm_address, transaction
 from payment_chain import ASSETS, Pending, Rejected, payment_data, verify
+from subscriptions import Subscriptions
 
 NETWORKS = {"ethereum": "Ethereum", "base": "Base", "arbitrum": "Arbitrum", "polygon": "Polygon", "bsc": "BNB Smart Chain", "solana": "Solana", "tron": "Tron"}
 
@@ -45,6 +46,7 @@ class Payments:
                 CREATE TABLE IF NOT EXISTS credit_holds (id TEXT PRIMARY KEY, user_id TEXT NOT NULL REFERENCES users(id),
                     amount INTEGER NOT NULL, expires INTEGER NOT NULL);
             """)
+        self.subscriptions = Subscriptions(store)
 
     def snapshot(self, user=None):
         with self.store.db() as db:
@@ -272,6 +274,10 @@ class Payments:
             price = db.execute('SELECT * FROM token_prices WHERE model=?',(model,)).fetchone()
             if not price or not (price['input_microusd'] or price['output_microusd']):
                 return True
+            # A subscription with tokens left in its window includes the request: nothing is held,
+            # and its measured tokens count in the window when it finishes.
+            if self.subscriptions.cover(db, user, model, request, int(time.time())):
+                return True
             cached = db.execute('SELECT cached_microusd FROM token_cache_prices WHERE model=?',(model,)).fetchone()
             # This is a conservative financial ceiling, NOT a token count. Only
             # measured upstream usage is ever billed; exceeding it is not charged.
@@ -291,6 +297,16 @@ class Payments:
                 payload['max_tokens']=outputs
         return True
 
+    def refusal(self, user, model):
+        """Why a priced request could not start: a used-up subscription window, or a balance below the hold."""
+        with self.store.db() as db:
+            resets = self.subscriptions.used_up(db, user, model, int(time.time()))
+        if resets:
+            return ("Your subscription's limit for this window is reached. It resets at "
+                    + time.strftime('%Y-%m-%d %H:%M UTC', time.gmtime(resets))
+                    + "; until then requests are charged from your balance, which is below the temporary request reservation. Top up in Usage.")
+        return 'Balance is below the temporary request reservation. Top up in Usage or lower the output token limit.'
+
     def finish(self,request,completed,usage,record=None,cached=None):
         with self.store.db() as db:
             db.execute('BEGIN IMMEDIATE')
@@ -298,6 +314,10 @@ class Payments:
             quote = db.execute('SELECT * FROM token_quotes WHERE id=?',(request,)).fetchone()
             cached_quote = db.execute('SELECT cached_rate FROM token_quote_cache WHERE id=?',(request,)).fetchone()
             state,charge,detail='free',0,''
+            measured=[usage.get(k) for k in ('prompt_tokens','completion_tokens')] if isinstance(usage,dict) else [None,None]
+            counted=sum(measured) if completed and all(type(n) is int and n>=0 for n in measured) else 0
+            if self.subscriptions.settle(db,request,counted):
+                state,detail='subscription','Included in the subscription.'
             if hold and quote:
                 counts=[usage.get(k) for k in ('prompt_tokens','completion_tokens')] if isinstance(usage,dict) else [None,None]
                 valid=all(type(n) is int and n>=0 for n in counts)

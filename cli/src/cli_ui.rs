@@ -1831,6 +1831,12 @@ fn checklist_key(at: &mut usize, choices: &[Choice], checked: &mut [bool], back:
 /// Space toggles a checkbox; Enter confirms the entire selection. Escape/Back behaves like
 /// other wizard questions. Disabled choices can never be submitted.
 pub fn multiselect(question: &str, note: &[String], choices: &[Choice], initial: &[usize], required: bool) -> Result<Vec<usize>, String> {
+    multiselect_between(question, note, choices, initial, usize::from(required), choices.len())
+}
+
+/// [`multiselect`] that takes from `least` to `most` ticked choices, and says so in place when
+/// Enter is pressed with fewer or more.
+pub fn multiselect_between(question: &str, note: &[String], choices: &[Choice], initial: &[usize], least: usize, most: usize) -> Result<Vec<usize>, String> {
     if choices.is_empty() { return Err("There is nothing to choose from.".into()); }
     let _input = input_lock();
     let raw = Raw::on()?;
@@ -1860,9 +1866,11 @@ pub fn multiselect(question: &str, note: &[String], choices: &[Choice], initial:
         match read_key_with_cancel(true) {
             Err(error) => break Err(error),
             Ok(key) => if let Some(answer) = checklist_key(&mut at, choices, &mut checked, back, key) {
-                if answer.as_ref().is_ok_and(|items| required && items.is_empty()) {
-                    problem = "Select at least one option.".into();
-                } else { break answer; }
+                match answer.as_ref().map(Vec::len) {
+                    Ok(count) if count < least => problem = if least == 1 { "Select at least one option.".into() } else { format!("Select at least {least} options.") },
+                    Ok(count) if count > most => problem = format!("Select at most {most}."),
+                    _ => break answer,
+                }
             },
         }
     };
@@ -1993,16 +2001,50 @@ pub fn input(
     secret: bool,
     check: &dyn Fn(&str) -> Result<String, String>,
 ) -> Result<String, String> {
-    input_with_initial(question,&[],default,secret,"",check)
+    input_with_initial(question,&[],default,if secret { Shown::Counted } else { Shown::Text },"",check)
 }
 pub fn input_prefilled(question:&str,initial:&str,check:&dyn Fn(&str)->Result<String,String>)->Result<String,String>{
-    input_with_initial(question,&[],"",false,initial,check)
+    input_with_initial(question,&[],"",Shown::Text,initial,check)
 }
 /// [`input_prefilled`] with explanatory lines under the question.
 pub fn input_noted(question:&str,note:&[String],initial:&str,check:&dyn Fn(&str)->Result<String,String>)->Result<String,String>{
-    input_with_initial(question,note,"",false,initial,check)
+    input_with_initial(question,note,"",Shown::Text,initial,check)
 }
-fn input_with_initial(question:&str,note:&[String],default:&str,secret:bool,initial:&str,check:&dyn Fn(&str)->Result<String,String>)->Result<String,String>{
+
+/// A secret, such as a test login's password, with explanatory lines under the question: a dot
+/// for each character while it is typed, and once answered six dots whatever its length, so
+/// neither the secret nor its length stays on screen or in scrollback. `check` gets the entry
+/// as typed, untrimmed ("" when Enter is pressed at once, so an optional secret can be skipped),
+/// and says what is wrong with it. The answer is wiped from memory when dropped.
+pub fn masked(question: &str, note: &[String], check: &dyn Fn(&str) -> Result<(), String>) -> Result<zeroize::Zeroizing<String>, String> {
+    input_with_initial(question, note, "", Shown::Masked, "", &|entry| check(entry).map(|()| entry.to_owned())).map(zeroize::Zeroizing::new)
+}
+
+/// How a line of text shows while it is typed and once it is answered.
+#[derive(Clone, Copy, Debug, PartialEq)]
+enum Shown {
+    /// As typed.
+    Text,
+    /// Dots while typed; its number of characters once answered.
+    Counted,
+    /// Dots while typed; six dots once answered, or "none" when skipped.
+    Masked,
+}
+
+impl Shown {
+    /// What the answered question shows for `answer`.
+    fn answer(self, answer: &str) -> String {
+        match self {
+            Shown::Text => answer.to_owned(),
+            Shown::Counted => format!("{} characters", answer.chars().count()),
+            Shown::Masked if answer.is_empty() => "none".to_owned(),
+            Shown::Masked => "••••••".to_owned(),
+        }
+    }
+}
+
+fn input_with_initial(question:&str,note:&[String],default:&str,shown:Shown,initial:&str,check:&dyn Fn(&str)->Result<String,String>)->Result<String,String>{
+    let secret = shown != Shown::Text;
     let _input = input_lock();
     let raw = Raw::on()?;
     let back = back_offered(true);
@@ -2016,8 +2058,10 @@ fn input_with_initial(question:&str,note:&[String],default:&str,secret:bool,init
             break Err(error);
         }
         let room = size().0.saturating_sub(12);
-        let shown = if value.is_empty() {
+        let typed = if value.is_empty() {
             format!("{caret}{}", muted(default))
+        } else if shown == Shown::Masked {
+            format!("{}{caret}", "•".repeat(value.chars().count().min(24)))
         } else if secret {
             let count = value.chars().count();
             format!(
@@ -2034,7 +2078,7 @@ fn input_with_initial(question:&str,note:&[String],default:&str,secret:bool,init
         for text in note {
             lines.push(format!("{}  {}", open_rail(), muted(text)));
         }
-        lines.push(format!("{}  {shown}", open_rail()));
+        lines.push(format!("{}  {typed}", open_rail()));
         if !problem.is_empty() {
             lines.push(format!("{}  {}", paint("▲", AMBER), paint(&problem, AMBER)));
         }
@@ -2072,8 +2116,7 @@ fn input_with_initial(question:&str,note:&[String],default:&str,secret:bool,init
     finish(
         id,
         match &result {
-            Ok(answer) if secret => answered(question, &format!("{} characters", answer.chars().count())),
-            Ok(answer) => answered(question, answer),
+            Ok(answer) => answered(question, &shown.answer(answer)),
             Err(error) => left(question, error),
         },
     );
@@ -2562,7 +2605,7 @@ pub fn dash_close() {
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     #[test]
     fn owned_hub_console_draws_prompts_even_when_desktop_inherited_automation_flags() {
         assert_eq!(super::console_decoration(true, true, true, false, true), (true, true));
@@ -2644,10 +2687,10 @@ mod tests {
     /// about something it never did. Which test that was depended on the order the harness happened
     /// to run them in, so it read as one test being flaky when nothing about that test was wrong.
     /// Resetting on both edges means a test's result says something about that test only.
-    struct Painted(#[allow(dead_code)] std::sync::MutexGuard<'static, ()>);
+    pub(crate) struct Painted(#[allow(dead_code)] std::sync::MutexGuard<'static, ()>);
 
     impl Painted {
-        fn fresh() -> Self {
+        pub(crate) fn fresh() -> Self {
             let guard = PAINTER_TESTS.lock().unwrap_or_else(|p| p.into_inner());
             reset_painter();
             Self(guard)
@@ -2699,6 +2742,15 @@ mod tests {
         assert_eq!(input_entry("  alice  ", "", false), "alice");
         assert_eq!(input_entry("   ", "default", false), "default");
         assert_eq!(input_entry("", "default", true), "default");
+    }
+
+    #[test]
+    fn a_masked_answer_shows_neither_the_secret_nor_its_length() {
+        assert_eq!(Shown::Masked.answer("correct horse"), "••••••");
+        assert_eq!(Shown::Masked.answer("x"), Shown::Masked.answer("a much longer password"));
+        assert_eq!(Shown::Masked.answer(""), "none");
+        assert_eq!(Shown::Counted.answer("token"), "5 characters");
+        assert_eq!(Shown::Text.answer("alice"), "alice");
     }
 
     #[test]
@@ -3013,43 +3065,91 @@ mod tests {
     fn busy_runs_cleanup_after_an_earlier_interrupt_and_stops_on_a_new_one() {
         let _painted = Painted::fresh();
         let runtime = tokio::runtime::Builder::new_current_thread().enable_all().build().unwrap();
+        // Tests run side by side, their waits register watches in the same process-wide list, and
+        // a wait borrows the newest watch there. So this test follows its own watches by their
+        // flags and registrations, never by what else the list holds, and a part that another
+        // test's watch came between runs again, at most TRIES times.
+        const TRIES: usize = 20;
+        /// Whether a wait that starts now borrows the watch with this flag: it is the newest.
+        fn newest(flag: &Arc<AtomicBool>) -> bool {
+            watched().is_some_and(|now| Arc::ptr_eq(&now, flag))
+        }
         runtime.block_on(async {
-            let flag = Arc::new(AtomicBool::new(false));
-            let watch = Interrupts::watch(flag.clone());
-            assert_eq!(busy("Loading", async { Ok::<_, String>(7) }).await, Ok(7));
-            let set = flag.clone();
-            let waiting = busy("Waiting", async {
-                set.store(true, Ordering::SeqCst);
-                std::future::pending::<Result<(), String>>().await
-            });
-            assert_eq!(waiting.await, Err(CANCELLED.into()), "a new Ctrl+C stops waiting");
-            // Cleanup after that Ctrl+C still runs to the end.
-            assert_eq!(busy("Stopping", async {
-                tokio::time::sleep(Duration::from_millis(120)).await;
-                Ok::<_, String>("stopped")
-            }).await, Ok("stopped"));
-            drop(watch);
-            assert!(watched().is_none());
-            // A wait that borrowed a watch which then ended keeps Ctrl+C with a watch of its own.
-            let borrowed = Arc::new(AtomicBool::new(false));
-            let watch = Interrupts::watch(borrowed.clone());
-            let outlived = busy("Starting", async move {
+            // Inside a watch, a new Ctrl+C stops a wait, and cleanup after it still runs to the end.
+            let mut tries = 0;
+            let flag = loop {
+                tries += 1;
+                assert!(tries <= TRIES, "another test's watch came between every try");
+                let flag = Arc::new(AtomicBool::new(false));
+                let watch = Interrupts::watch(flag.clone());
+                assert_eq!(busy("Loading", async { Ok::<_, String>(7) }).await, Ok(7));
+                let waiting = busy("Waiting", async {
+                    if !newest(&flag) {
+                        return Ok(false);
+                    }
+                    flag.store(true, Ordering::SeqCst);
+                    std::future::pending::<Result<bool, String>>().await
+                });
+                match tokio::time::timeout(Duration::from_secs(10), waiting).await.expect("a new Ctrl+C did not stop the wait") {
+                    Ok(false) => continue,
+                    stopped => assert_eq!(stopped, Err(CANCELLED.into()), "a new Ctrl+C stops waiting"),
+                }
+                let stopping = busy("Stopping", async {
+                    let this = newest(&flag);
+                    tokio::time::sleep(Duration::from_millis(120)).await;
+                    Ok::<_, String>(this)
+                });
+                match stopping.await {
+                    Ok(true) => {}
+                    Ok(false) => continue,
+                    Err(error) => panic!("cleanup after that Ctrl+C was stopped: {error}"),
+                }
                 drop(watch);
-                tokio::time::sleep(QUICK + Duration::from_millis(100)).await;
-                let own = watched().ok_or("no watch while the spinner shows")?;
-                assert!(!Arc::ptr_eq(&own, &borrowed));
-                Ok::<_, String>(())
-            });
-            assert_eq!(outlived.await, Ok(()));
-            assert!(watched().is_none(), "its own watch ends with the wait");
+                break flag;
+            };
+            assert!(!registered(&flag), "a watch that ends leaves the list");
+            // A wait that borrowed a watch which then ended keeps Ctrl+C with a watch of its own
+            // while the spinner shows, and that watch ends with the wait. Registrations are
+            // numbered in order, so the wait's own watch is the one registered during the wait.
+            // When none or more were (another test's watch ran as the borrowed one ended, or
+            // started meanwhile), this part runs again.
+            let mut tries = 0;
+            let mut seen = String::new();
+            loop {
+                tries += 1;
+                assert!(tries <= TRIES, "no wait kept Ctrl+C with a watch of its own that ended with it: {seen}");
+                let borrowed = Arc::new(AtomicBool::new(false));
+                let watch = Interrupts::watch(borrowed.clone());
+                let next = watch.registration + 1;
+                let outlived = busy("Starting", async move {
+                    drop(watch);
+                    tokio::time::sleep(QUICK + Duration::from_millis(100)).await;
+                    // The watch registered next, as the spinner shows.
+                    Ok::<_, String>(WATCHED.lock().unwrap_or_else(|p| p.into_inner()).iter()
+                        .find(|(registration, _)| *registration == next)
+                        .map(|(_, flag)| flag.clone()))
+                });
+                let running = outlived.await.unwrap();
+                assert!(!registered(&borrowed), "the borrowed watch ended");
+                let during = WATCHES.load(Ordering::SeqCst) as u64 - next;
+                let ended = running.as_ref().map(|own| !registered(own));
+                if during == 1 && ended == Some(true) {
+                    break;
+                }
+                seen = format!("{during} watches started during the last wait; the one registered next {}", match ended {
+                    None => "was not running as the spinner showed",
+                    Some(false) => "outlived the wait",
+                    Some(true) => "ended with the wait",
+                });
+            }
             // Watches that end out of order leave no stale flag behind.
             let (first, second) = (Arc::new(AtomicBool::new(false)), Arc::new(AtomicBool::new(false)));
             let earlier = Interrupts::watch(first.clone());
             let later = Interrupts::watch(second.clone());
             drop(earlier);
-            assert!(watched().is_some_and(|flag| Arc::ptr_eq(&flag, &second)));
+            assert!(!registered(&first) && registered(&second));
             drop(later);
-            assert!(watched().is_none());
+            assert!(!registered(&second));
         });
     }
 

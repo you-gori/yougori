@@ -547,12 +547,15 @@ async fn idle_release_returns_capacity_without_a_new_demand_but_never_on_unknown
 fn a_gguf_demand_is_its_tensors_its_kv_cache_and_the_fixed_allowance_and_stamps_only_what_fits() {
     // Qwen2.5-0.5B-Instruct Q4_K_M: 24 layers of 128 key and 128 value columns at f16.
     let qwen = json!({"runner": "yougori-llama-cpp", "resources": {"gguf": {"tensorBytes": 485_441_536u64, "kvBytesPerToken": 12_288u64, "layers": 24}}});
-    let demand = llama_cpp_demand(&qwen["resources"]["gguf"]).unwrap();
+    let demand = llama_cpp_demand(&qwen["resources"]["gguf"], LLAMA_CPP_CONTEXT).unwrap();
     assert_eq!(demand, 485_441_536 + 32_768 * 12_288 + 512 * 1024 * 1024);
     let mut environment = json!({});
     assert!(stamp_llama_cpp(&mut environment, &qwen, &sample(GIB)));
     assert_eq!(environment[POLICY], "local-single-llama-cpp-v1");
     assert_eq!(environment[DEMAND], demand.to_string());
+    // The facts it was priced from, so the demand can follow a chosen context window.
+    assert_eq!(serde_json::from_str::<Value>(environment[GGUF].as_str().unwrap()).unwrap(),
+        json!({"tensorBytes": 485_441_536u64, "kvBytesPerToken": 12_288u64}));
     let options: BTreeMap<String, String> = [
         (POLICY.to_owned(), LLAMA_CPP.to_owned()),
         (DEMAND.to_owned(), demand.to_string()),
@@ -576,5 +579,52 @@ fn a_gguf_demand_is_its_tensors_its_kv_cache_and_the_fixed_allowance_and_stamps_
             "{compatibility}"
         );
         assert!(environment.get(POLICY).is_none());
+    }
+}
+
+#[test]
+fn a_gguf_demand_follows_the_context_window_its_next_start_allocates() {
+    let qwen = json!({"runner": "yougori-llama-cpp", "resources": {"gguf": {"tensorBytes": 485_441_536u64, "kvBytesPerToken": 12_288u64}}});
+    let mut environment = json!({});
+    assert!(stamp_llama_cpp(&mut environment, &qwen, &sample(GIB)));
+    let mut options: BTreeMap<String, String> = environment.as_object().unwrap().iter()
+        .map(|(key, value)| (key.clone(), value.as_str().unwrap().to_owned())).collect();
+    let at = |tokens: u64| 485_441_536 + tokens * 12_288 + LLAMA_CPP_FIXED;
+    assert_eq!(llama_cpp_demand_at(&options, 131_072), Ok(Some(at(131_072))));
+    // A larger window saved grows the demand at once (the runner may restart with it); a start
+    // prices it exactly, and without a window the launch's 32,768 tokens again.
+    options.insert(super::super::MODEL_CONTEXT.into(), "131072".into());
+    reprice_llama_cpp(&mut options, false);
+    assert_eq!(options[DEMAND], at(131_072).to_string());
+    assert_eq!(demand(&options).unwrap().unwrap().reserved(24 * GIB), at(131_072));
+    // A smaller one saved keeps the larger demand while the runner may still hold that window.
+    options.insert(super::super::MODEL_CONTEXT.into(), "65536".into());
+    reprice_llama_cpp(&mut options, false);
+    assert_eq!(options[DEMAND], at(131_072).to_string());
+    reprice_llama_cpp(&mut options, true);
+    assert_eq!(options[DEMAND], at(65_536).to_string());
+    options.remove(super::super::MODEL_CONTEXT);
+    reprice_llama_cpp(&mut options, true);
+    assert_eq!(options[DEMAND], at(32_768).to_string());
+    // A reservation this GPU cannot hold beside the host's headroom is refused in words.
+    assert!(llama_cpp_fits(at(131_072), 24 * GIB).is_ok());
+    let refusal = llama_cpp_fits(23 * GIB, 24 * GIB).unwrap_err();
+    assert!(refusal.contains("23.0 GB") && refusal.contains("shorter context window"), "{refusal}");
+    // A stamp without the facts keeps its 32,768-token demand and takes no other window.
+    options.remove(GGUF);
+    assert_eq!(llama_cpp_demand_at(&options, 32_768), Ok(None));
+    assert!(llama_cpp_demand_at(&options, 65_536).unwrap_err().contains("Recreate the model"));
+    options.insert(super::super::MODEL_CONTEXT.into(), "65536".into());
+    reprice_llama_cpp(&mut options, true);
+    assert_eq!(options[DEMAND], at(32_768).to_string());
+    // Other profiles and the legacy scheduler have nothing to price.
+    for policy in [None, Some(TRANSFORMERS), Some(PROFILE)] {
+        let mut other = BTreeMap::from([(DEMAND.to_owned(), "1000".to_owned()), (super::super::MODEL_CONTEXT.to_owned(), "131072".to_owned())]);
+        if let Some(policy) = policy { other.insert(POLICY.into(), policy.into()); }
+        assert_eq!(llama_cpp_demand_at(&other, 131_072), Ok(None));
+        for starting in [false, true] {
+            reprice_llama_cpp(&mut other, starting);
+            assert_eq!(other[DEMAND], "1000");
+        }
     }
 }

@@ -1469,7 +1469,7 @@ mod import {
         h.catalog
             .verify_object(&Scope::Host, image.tree.object)
             .unwrap();
-        h.reopen();
+        h = h.reopen();
         assert_eq!(h.catalog.objects(&Scope::Host).len(), 3);
         h.catalog
             .verify_object(&Scope::Host, image.tree.object)

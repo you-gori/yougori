@@ -86,6 +86,33 @@ cease reducing the available balance after ten minutes; an expired hold cannot
 be charged later. A crash after delivery but before accounting can result in a
 free request, never a second charge.
 
+## Subscriptions
+
+Admin → Subscriptions has an **Offer subscriptions** switch and one to five plans
+(`site/subscriptions.py`). Each plan has a name, a price in USD per 30 days, the models it
+includes, a number of tokens per window, and whether that limit resets **every 5 hours** or
+**every week**. People buy a plan on Usage from their dollar balance, 30 days at a time; buying
+the same plan again adds 30 days, and another plan can be chosen once the running one ends, so
+each person has one subscription at a time. A subscription keeps the name, models, tokens and
+reset of the plan as it was when it was bought or renewed, so editing or removing a plan never
+changes a paid period. Switched off, nothing can be bought or renewed and Usage lists no plans;
+periods already paid for run to their end.
+
+Subscribers never see a plan's tokens, on the page or from the API: they see the plans' prices,
+models and reset, and for their own subscription the share of the window's limit used and when
+it resets. Admin sees the tokens.
+
+A window opens with the first included request after the previous window ended and lasts five
+hours or a week. A priced token request to an included model that starts while the window has
+tokens left is included: nothing is reserved from the balance, and its measured input and output
+tokens count in the window when it finishes (a request that does not complete counts nothing).
+The last request of a window may take it past its limit. After that, and for models the plan
+does not include, requests are charged from the balance at the model's token prices, as without
+a subscription; if the balance is too low as well, the 402 says when the limit resets. Usage
+marks included requests "Subscription". Free models and media jobs are not counted. Admin lists
+the people subscribed, with their tokens used, and **Reset limit** gives someone a fresh window
+at once.
+
 ## RPC operations
 
 Defaults use public mainnet RPC services; rate limits or outages leave payments

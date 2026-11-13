@@ -313,11 +313,11 @@ impl fmt::Display for VmServiceError {
                 write!(f, "the launch's host evidence ({step:?}) failed: {detail}")
             }
             Self::LaunchRolledBack { failure } => {
-                write!(f, "the launch was rolled back: {failure:?}")
+                write!(f, "the launch was rolled back: {failure}")
             }
             Self::LaunchRollbackStalled { failure, stall } => write!(
                 f,
-                "the launch failed ({failure:?}) and its rollback stalled: {stall:?}"
+                "the launch failed ({failure}) and its rollback stalled: {stall:?}"
             ),
             Self::LaunchQueued { position } => write!(
                 f,

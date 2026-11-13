@@ -1,25 +1,71 @@
-"""Bounded, hash-verified tool delivery inside an already isolated VM."""
+"""Bounded, hash-verified tool delivery inside an already isolated VM.
+
+An image made for one harness pins its tool package (tool-package.json). The Yougori harness's
+base image pins none: before any chunk, the launcher tells the VM which harness's pack to expect,
+with its hash and size, or that the harness needs none (`expect`, taken once). The pack is then
+received and checked exactly as a pinned one."""
 import base64
 import hashlib
 import json
 from pathlib import Path
+import re
 import tarfile
 import threading
 
+HARNESS = re.compile(r"[a-z][a-z0-9-]{0,31}")
+DIGEST = re.compile(r"[a-f0-9]{64}")
+# The largest pack the launcher downloads (vm_host).
+PACK_BYTES = 512 << 20
+
 
 class Package:
-    def __init__(self,root):
+    def __init__(self,root,shared=False):
+        """`shared`: the image is the Yougori harness's base, which waits for the launcher's
+        `expect` (unless the image pins a package itself); any other image without a pinned
+        package has nothing to receive."""
         self.root=Path(root)
         spec=self.root/'tool-package.json'
         self.spec=json.loads(spec.read_text()) if spec.exists() else None
-        self.phase='waiting' if self.spec else 'ready'
+        # The harness whose pack the launcher declared (None until then, and for pinned images).
+        self.harness=None
+        self.phase='waiting' if self.spec else 'expecting' if shared else 'ready'
         self.offset=0
         self.error=''
         self.lock=threading.Lock()
         self.path=self.root/'tool-download.partial'
 
+    def current(self):
+        value={'phase':self.phase,'offset':self.offset,'error':self.error}
+        if self.harness is not None: value['harness']=self.harness
+        return value
+
     def status(self):
-        with self.lock: return {'phase':self.phase,'offset':self.offset,'error':self.error}
+        with self.lock: return self.current()
+
+    def expect(self,data):
+        """The launcher's word on what this VM runs: {"harness"} alone when that harness needs no
+        pack, or with its pack's "sha256" and "bytes". Taken once, before any chunk; the same word
+        again (a reply that was lost) changes nothing, and any other is refused."""
+        if (not isinstance(data,dict) or set(data)-{'harness','sha256','bytes'} or not isinstance(data.get('harness'),str)
+                or not HARNESS.fullmatch(data['harness'])):
+            raise ValueError('Invalid pack declaration.')
+        pack=None
+        if 'sha256' in data or 'bytes' in data:
+            if (not isinstance(data.get('sha256'),str) or not DIGEST.fullmatch(data['sha256'])
+                    or type(data.get('bytes')) is not int or not 0<data['bytes']<=PACK_BYTES):
+                raise ValueError('Invalid pack declaration.')
+            pack={'sha256':data['sha256'],'bytes':data['bytes']}
+        with self.lock:
+            if self.harness is not None:
+                if self.harness!=data['harness'] or self.spec!=pack:
+                    raise ValueError('This VM already expects another pack.')
+                return self.current()
+            if self.phase!='expecting':
+                raise ValueError('This VM does not take a pack declaration.')
+            self.harness=data['harness']
+            self.spec=pack
+            self.phase='waiting' if pack else 'ready'
+            return self.current()
 
     def chunk(self,data):
         with self.lock:

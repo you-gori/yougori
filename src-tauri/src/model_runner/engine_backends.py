@@ -172,6 +172,33 @@ def llama_threads():
     return max(1, min(64, os.cpu_count() or 2))
 
 
+# The model's own longest context, read before llama.cpp allocates a window: ARCH.context_length
+# in its GGUF header, a key written as its length (8 bytes), its name and its type (4, uint32)
+# before the value; the converter writes it ahead of the tokenizer, within the first MiB. 0 when
+# the header does not say.
+def gguf_context(path):
+    try:
+        with open(path, "rb") as file:
+            head = file.read(1 << 20)
+    except OSError:
+        return 0
+    for size, arch, value in re.findall(rb"([\x10-\xff])\x00{7}([\w-]+)\.context_length\x04\x00{3}(.{4})", head, re.S):
+        if size[0] == len(arch) + 15:
+            return int.from_bytes(value, "little")
+    return 0
+
+
+# The context window llama-server allocates (-c): the owner's choice (YOUGORI_MODEL_CONTEXT,
+# model optimize --context, which the engine checks), else 32,768 tokens; a choice never goes past
+# the model's own longest context.
+def llama_window(model):
+    value = os.environ.get("YOUGORI_MODEL_CONTEXT", "")
+    if not re.fullmatch(r"[1-9][0-9]{3,5}", value):
+        return 32768
+    most = gguf_context(model)
+    return min(int(value), most) if most else int(value)
+
+
 def llama_cpu_options():
     threads = str(llama_threads())
     # Polling threads also consume a constrained container's CPU budget.
@@ -234,18 +261,20 @@ def load_gguf():
     # llama.cpp refuses every slot action, the erase of the owner's KV reset included, without a
     # save path; this empty private directory enables them, and nothing is ever saved there.
     saves = tempfile.mkdtemp(prefix="yougori-llama-slots-")
+    window = llama_window(model)
 
     def start(parallel):
-        """Starts llama-server and waits until it answers. Several slots share one 32,768-cell KV
-        pool (--kv-unified; the queue reserves each request's cells in it) and keep no prompt cache
-        in host RAM (--cache-ram 0: unaccounted, and llama.cpp's default exceeds small containers).
+        """Starts llama-server and waits until it answers. Several slots share one KV pool of the
+        window's cells (--kv-unified; the queue reserves each request's cells in it) and keep no prompt cache
+        in host RAM (--cache-ram 0: unaccounted, and llama.cpp's default exceeds small containers),
+        nor more than one context checkpoint per slot (32 of a sliding-window model's filled 8 GB).
         One slot is the launch used before parallel serving (the known-good fallback), now also
         without the host-RAM prompt cache."""
         global ENGINE_PROCESS
         flags = ["-np", str(parallel), "--kv-unified"] if parallel > 1 else ["-np", "1"]
         process = ENGINE_PROCESS = subprocess.Popen(
             [binary, "-m", model, "--host", "127.0.0.1", "--port", str(LLAMA["port"]), "--api-key", LLAMA["key"],
-             "--no-webui", *flags, "-c", "32768", "--cache-ram", "0", "--jinja", "--reasoning-format", "none", "--slot-save-path", saves,
+             "--no-webui", *flags, "-c", str(window), "--cache-ram", "0", "--ctx-checkpoints", "1", "--jinja", "--reasoning-format", "none", "--slot-save-path", saves,
              "--device", ",".join(devices) if devices else "none", *llama_cpu_options()],
             env=environment, stdout=subprocess.DEVNULL, stderr=subprocess.PIPE, text=True, errors="replace")
 
@@ -290,9 +319,9 @@ def load_gguf():
     settings = props.get("default_generation_settings") or {}
     LLAMA["context"] = int(settings.get("n_ctx") or 4096)
     slots = max(1, int(props.get("total_slots") or 1))
-    # Slots holding more than 32,768 cells between them share the one pool: each request reserves
-    # its prompt plus max_tokens there. Slots splitting the cells cannot overflow one another.
-    launch_serves(slots, LLAMA["context"] if slots > 1 and LLAMA["context"] * slots > 32768 else 0)
+    # Slots holding more cells between them than the window share the one pool: each request
+    # reserves its prompt plus max_tokens there. Slots splitting the cells cannot overflow one another.
+    launch_serves(slots, LLAMA["context"] if slots > 1 and LLAMA["context"] * slots > window else 0)
 
     def watch():
         returncode = process.wait()
@@ -339,15 +368,113 @@ def load_native_gguf():
                  runner="llama.cpp", quant=os.environ.get("YOUGORI_MODEL_QUANT"))
 
 
+class DeviceFacts:
+    """torch.cuda's answers about this computer's GPUs, read in a short-lived process. The model
+    server lives as long as its container and a CUDA context it opened stays with it (a few hundred
+    MiB on the GPU, charged as outside use at every later vLLM admission): with several vLLM models
+    on one GPU those leftovers alone left no room for any of them to load."""
+
+    def __init__(self, devices):
+        self.devices = devices
+
+    def is_available(self):
+        return bool(self.devices)
+
+    def device_count(self):
+        return len(self.devices)
+
+    def get_device_capability(self, index):
+        return tuple(self.devices[index]["capability"])
+
+    def mem_get_info(self, index):
+        return (self.devices[index]["free"], self.devices[index]["total"])
+
+    def get_device_properties(self, index):
+        return types.SimpleNamespace(total_memory=self.devices[index]["total"], name=self.devices[index]["name"])
+
+    def get_device_name(self, index):
+        return self.devices[index]["name"]
+
+
+DEVICE_FACTS_CODE = ("import json, torch; c = torch.cuda; print(json.dumps([{'capability': list(c.get_device_capability(i)), "
+                     "'free': c.mem_get_info(i)[0], 'total': c.mem_get_info(i)[1], 'name': c.get_device_name(i)} "
+                     "for i in range(c.device_count())] if c.is_available() else []))")
+LAST_DEVICE_FACTS = None
+
+
+def device_facts(cuda):
+    """`cuda` (torch.cuda) answered by a short-lived process (DeviceFacts); a stand-in that is not
+    the real torch.cuda (a test's) is used as it is, as is torch.cuda if that process fails."""
+    global LAST_DEVICE_FACTS
+    torch = sys.modules.get("torch")
+    if torch is None or cuda is not getattr(torch, "cuda", None) or not hasattr(torch, "__version__"):
+        return cuda
+    environment = {k: v for k, v in os.environ.items() if k not in PRIVATE_ENVIRONMENT + ("HF_TOKEN",)}
+    try:
+        done = subprocess.run([sys.executable, "-c", DEVICE_FACTS_CODE], env=environment, capture_output=True, text=True, timeout=180)
+        LAST_DEVICE_FACTS = DeviceFacts(json.loads(done.stdout.strip().splitlines()[-1]))
+        return LAST_DEVICE_FACTS
+    except (OSError, ValueError, IndexError, subprocess.TimeoutExpired):
+        return cuda
+
+
+def vllm_fits_device(weight_bytes, cuda):
+    """Before any download: refuses a checkpoint this computer's GPUs could not hold even when empty
+    (every MoE expert stays resident; no implicit CPU offload). vllm_hardware checks free memory
+    once the GPU is granted, after the download."""
+    cuda = device_facts(cuda)
+    devices = cuda.device_count() if cuda.is_available() else 0
+    if not devices or any(cuda.get_device_capability(i) < (7, 5) for i in range(devices)):
+        raise RuntimeError("vLLM needs CUDA GPUs with compute capability 7.5 or newer")
+    required = (weight_bytes / 1073741824 + 2.0) / 0.9  # as vllm_hardware: 2 GiB headroom, 90% pool
+    total = devices * min(cuda.get_device_properties(i).total_memory for i in range(devices)) / 1073741824
+    if not weight_bytes or total < required:
+        raise RuntimeError("This checkpoint needs approximately {:.0f} GB of GPU memory; this computer's GPU memory is {:.1f} GB. All MoE experts must fit, including inactive experts. No model weights were downloaded.".format(required, total))
+
+
+VLLM_CONTEXT_OVERHEAD = 2.5 * 1073741824
+VLLM_CONTEXT_FLOOR = 8192
+
+
+def vllm_context_fit(config, weight_bytes, total_bytes, context):
+    """The longest context, at most `context`, whose KV cache fits what vLLM's 90% pool leaves after
+    the weights and a conservative allowance for activations, graphs and non-torch memory. vLLM
+    refuses to start when one sequence of its max-model-len does not fit (Qwen3-8B in BF16 on a
+    24 GB GPU: 147 KiB a token, about 4 GB left), and every launch it falls back to fails the same
+    way; a model whose context fits is unchanged. Only plain multi-head/grouped attention is
+    estimated (MLA, sliding-window and hybrid layers keep vLLM's own check), and never below
+    VLLM_CONTEXT_FLOOR."""
+    try:
+        # Qwen2/Qwen3 configs name a sliding window they do not use (use_sliding_window false).
+        windowed = config.get("use_sliding_window") is True or (config.get("sliding_window") and "use_sliding_window" not in config)
+        if windowed or any(config.get(key) for key in ("kv_lora_rank", "layer_types", "attention_chunk_size")):
+            return context
+        layers = int(config["num_hidden_layers"])
+        heads = int(config["num_attention_heads"])
+        kv_heads = int(config.get("num_key_value_heads") or heads)
+        head_dim = int(config.get("head_dim") or int(config["hidden_size"]) // heads)
+    except (KeyError, TypeError, ValueError, ZeroDivisionError):
+        return context
+    width = {"float32": 4, "float16": 2, "bfloat16": 2}.get(str(config.get("torch_dtype") or config.get("dtype") or "bfloat16"), 2)
+    per_token = 2 * layers * kv_heads * head_dim * width
+    room = total_bytes * 0.90 - weight_bytes - VLLM_CONTEXT_OVERHEAD
+    if per_token <= 0 or room <= 0:
+        return context
+    fitted = int(room // per_token) // 1024 * 1024
+    return context if fitted >= context else max(fitted, min(context, VLLM_CONTEXT_FLOOR))
+
+
 def vllm_hardware(config, weight_bytes, cuda):
-    """Every MoE expert stays resident. Check before downloading weights; no implicit CPU offload."""
+    """Every MoE expert stays resident; no implicit CPU offload. Checked once the GPU is granted
+    (vllm_fits_device refused a checkpoint too large for the GPU before downloading it)."""
+    cuda = device_facts(cuda)
     count = cuda.device_count() if cuda.is_available() else 0
     required = (weight_bytes / 1073741824 + 2) / 0.90
     if not count or any(cuda.get_device_capability(i) < (7, 5) for i in range(count)):
         raise RuntimeError("vLLM needs CUDA GPUs with compute capability 7.5 or newer")
     available = count * min(cuda.mem_get_info(i)[0] for i in range(count)) / 1073741824
     if not weight_bytes or available < required:
-        raise RuntimeError("This checkpoint needs approximately {:.0f} GB of free GPU memory; {:.1f} GB is available. All MoE experts must fit, including inactive experts. No model weights were downloaded.".format(required, available))
+        raise RuntimeError("This checkpoint needs approximately {:.0f} GB of free GPU memory; {:.1f} GB is available. All MoE experts must fit, including inactive experts. Its weights stay on disk: free GPU memory, then start it again.".format(required, available))
     heads = int(config.get("num_attention_heads") or 1)
     kv_heads = int(config.get("num_key_value_heads") or heads)
     if heads % count or (kv_heads % count and count % kv_heads):
@@ -786,7 +913,7 @@ def backend_capabilities():
     if FORMAT == "gguf":
         pool = LLAMA.get("pool") or 0
         return {
-            "kvGrowth": {"supported": False, "detail": "llama.cpp allocates the context's KV cache when the model loads (-c 32768); it does not grow in increments."},
+            "kvGrowth": {"supported": False, "detail": "llama.cpp allocates the context's KV cache for its whole window when the model loads; it does not grow in increments."},
             "adapters": {"supported": False, "detail": "llama.cpp loads LoRA adapters only at start, from GGUF files; this launch loads none and attaches none at runtime."},
             "kvReuse": {"supported": True, "reset": not native, "detail": ("llama.cpp's " + str(slots) + " slots share one " + str(pool) + "-token KV pool; each reuses its cached prompt prefix while it stays there" if pool else "llama.cpp reuses the cached prompt prefix of each slot")
                         + ". The cache serves every caller of this model and is dropped when the model unloads" + ("; the native service's cache is not reset from here." if native else "; the owner can erase every slot (model_adapters --action kv-reset).")},
@@ -1020,6 +1147,14 @@ def load_vllm():
         kolibri_plugin()
     elif mode != "megakernel":
         vllm_registry(config)
+    # The weights download before this load asks for the GPU, as the Transformers and GGUF loads do:
+    # a grant is taken only when there is something to load, and a download of many minutes never
+    # holds the GPU's one loading turn (no other model loads while a loader owns the GPU).
+    if not MODEL_PATH and prepared is None:
+        if mode != "megakernel":
+            vllm_fits_device(size, torch.cuda)
+        root = verified_snapshot(revision)
+        remember_vllm_source(metadata, root, config, size)
     gpu_before_load()
     if mode == "megakernel":
         # The runner's manifest states the GPU it needs (megakernel_host.py checks it); vLLM's own
@@ -1027,9 +1162,6 @@ def load_vllm():
         count = 1
     else:
         count = vllm_hardware(config, size, torch.cuda)
-    if not MODEL_PATH and prepared is None:
-        root = verified_snapshot(revision)
-        remember_vllm_source(metadata, root, config, size)
     # Diagnostic only: this is source reuse, never a claim of retained GPU/KV state.
     STATE["sourceReused"] = reused
     if MODEL_PATH and MODEL_IMPORTED is not None:
@@ -1046,6 +1178,8 @@ def load_vllm():
         STATE["chatWarning"] = "This is a base checkpoint without a chat template. Use an instruction-tuned checkpoint for assistant chat."
     STATE["status"] = "loading"
     LLAMA["context"] = min(int(config.get("max_position_embeddings") or 4096), 32768)
+    if mode != "megakernel" and count == 1 and LAST_DEVICE_FACTS is not None:
+        LLAMA["context"] = vllm_context_fit(config, size, LAST_DEVICE_FACTS.get_device_properties(0).total_memory, LLAMA["context"])
     if mode == "megakernel":
         # The owner's kernel serves this load; a vLLM parked by an earlier load is ended first.
         parked, VLLM_PARKED = VLLM_PARKED, None
@@ -1091,7 +1225,7 @@ def load_vllm():
     quant = (config.get("quantization_config") or {}).get("quant_method")
 
     def ready(launch):
-        gpu = torch.cuda.get_device_name(0)
+        gpu = (LAST_DEVICE_FACTS or torch.cuda).get_device_name(0)
         STATE.update(status="ready", gpu=(str(count) + " × " + gpu) if count > 1 else gpu, gpuCount=count,
             context=LLAMA["context"], stream=True, weightsVerified=True, revision=revision, runner="vllm", **({"toolCalling": True} if TOOL_PARSER else {}),
             quant=str(quant).upper() if quant else None, precision=str(config.get("dtype") or config.get("torch_dtype") or "auto"), launch=launch)

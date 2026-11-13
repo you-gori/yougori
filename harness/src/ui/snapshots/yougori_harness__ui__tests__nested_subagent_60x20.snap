@@ -1,0 +1,25 @@
+---
+source: src/ui/tests.rs
+expression: narrow
+---
+
+  ▀▄ ▄▀ ▄▀▀▄ █  █ ▄▀▀▀ ▄▀▀▄ █▀▀▄ ▀█▀
+    █   █  █ █  █ █ ▀█ █  █ █▀█   █     OpenCode  v1.0.0
+    ▀    ▀▀   ▀▀   ▀▀▀  ▀▀  ▀  ▀ ▀▀▀    qwen3-coder-30b
+
+  OpenCode 1.0 · build mode
+
+› Find the callers
+
+  ⠸ Task   Find the callers of parse()          running 2.5s
+  │   ◇ Search parse\(                                  done
+  │   ⠸ Read   src/cli.rs                       running 2.5s
+  │   Two callers so far: src/lib.rs and src/cli.rs.
+
+
+
+╭──────────────────────────────────────────────────────────╮
+│ › Ask OpenCode anything                                  │
+╰──────────────────────────────────────────────────────────╯
+ ⠸ 2.5s · esc to stop · OpenCode · qwen3-coder-30b · Build
+[cursor 4,17]

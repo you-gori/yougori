@@ -64,6 +64,11 @@ def tools_enabled():
     return FORMAT == "gguf" or (FORMAT == "vllm" and bool(TOOL_PARSER))
 
 
+def agent_limits():
+    """Whether this model serves coding agents' long sessions (YOUGORI_MODEL_AGENT_API)."""
+    return os.environ.get("YOUGORI_MODEL_AGENT_API") == "1"
+
+
 def agent_arguments():
     """vLLM's own switches for agent tool calling, or none."""
     return ["--enable-auto-tool-choice", "--tool-call-parser", TOOL_PARSER] if FORMAT == "vllm" and TOOL_PARSER else []
@@ -1391,12 +1396,42 @@ def refuse_structured_output(body, meter):
 # OpenAI fields ignored here, and sampling ones vLLM and llama.cpp take.
 CHAT_IGNORED = {"user": str, "metadata": dict, "store": bool, "service_tier": str, "prompt_cache_key": str, "safety_identifier": str, "reasoning_effort": str}
 CHAT_SAMPLING = ("seed", "presence_penalty", "frequency_penalty")
+# What a client's chat request may carry that this server does not use: the fields it reads are
+# validated, these are dropped. Harnesses send vendor and cache hints (Anthropic's cache_control,
+# earlier replies' reasoning_content, OpenAI's top_k, modalities ["text"], verbosity...); refusing
+# them failed whole agents, and the website's plain-chat retry keeps them, so it failed too.
+CHAT_FIELDS = {"model", "messages", "max_tokens", "temperature", "stream", "truncate", "tools", "tool_choice", "parallel_tool_calls",
+               "stream_options", "max_completion_tokens", "top_p", "stop", "response_format", "n", "logprobs", *CHAT_SAMPLING, *CHAT_IGNORED}
+# Other servers' ways to bind a reply to a shape (vLLM's guided decoding and structured outputs,
+# llama.cpp's grammar and json_schema, SGLang's regex and ebnf). Only response_format reaches a
+# backend here, so these are refused: dropped, the caller would get free text and fail to parse it.
+# vLLM's guided_decoding_backend and guided_whitespace_pattern only tune how a constraint is
+# enforced and bind nothing alone, so they are dropped like other hints.
+CHAT_CONSTRAINTS = {"guided_json", "guided_regex", "guided_choice", "guided_grammar",
+                    "structural_tag", "structured_outputs", "grammar", "json_schema", "regex", "ebnf"}
+MESSAGE_FIELDS = {"role", "content", "tool_calls", "tool_call_id", "name"}
+
+
+class RequestLimit(ValueError):
+    """A request over one of this server's own size limits (messages, characters, tools, reply
+    length, body). Its message is this server's words with its own numbers, never caller text, so
+    it reaches the caller with the code yougori_request_limit and the caller learns what to shorten
+    (every other ValueError keeps the generic 400: model libraries can echo the input)."""
+
+    def body(self):
+        return {"error": {"code": "yougori_request_limit", "message": str(self)}}
 
 
 def validate_chat(body):
     # "truncate" is a Yougori extension: drop the oldest turns instead of failing when the context is full.
-    if not isinstance(body, dict) or set(body) - {"model", "messages", "max_tokens", "temperature", "stream", "truncate", "tools", "tool_choice", "parallel_tool_calls", "stream_options", "max_completion_tokens", "top_p", "stop", "response_format", "n", "logprobs", *CHAT_SAMPLING, *CHAT_IGNORED}:
+    if not isinstance(body, dict):
         raise ValueError("Use model, messages and OpenAI chat fields")
+    for field in set(body) - CHAT_FIELDS:
+        # A field that would change the answer in a way this server cannot honour is refused; the
+        # rest are dropped.
+        if field in ("functions", "function_call", "audio", "logit_bias", "top_logprobs") or field in CHAT_CONSTRAINTS or field == "modalities" and body[field] not in (["text"], None):
+            raise ValueError("Use model, messages and OpenAI chat fields")
+        del body[field]
     if (any(k in body and not isinstance(body[k], t) for k, t in CHAT_IGNORED.items()) or body.get("n", 1) != 1 or body.get("logprobs", False) is not False
             or "seed" in body and (type(body["seed"]) is not int or body["seed"] < 0) or any(k in body and (type(body[k]) not in (int, float) or not -2 <= body[k] <= 2) for k in CHAT_SAMPLING[1:])):
         raise ValueError("One choice (n 1), no logprobs, an integer seed, penalties from -2 to 2")
@@ -1406,13 +1441,18 @@ def validate_chat(body):
     stream, truncate = body.get("stream", False), body.get("truncate", False)
     if type(stream) is not bool or type(truncate) is not bool:
         raise ValueError("stream and truncate must be booleans")
+    # A model shared with coding agents (YOUGORI_MODEL_AGENT_API) takes their long sessions: more
+    # turns and characters, larger tool sets (agents send all of their tools on every request).
+    agent = agent_limits()
+    most_messages, most_tools = (1024, 64) if agent else (128, 32)
     messages = body.get("messages")
-    if not isinstance(messages, list) or not 1 <= len(messages) <= 128:
-        raise ValueError("Provide 1–128 chat messages")
+    if not isinstance(messages, list) or not 1 <= len(messages) <= most_messages:
+        # These words reach the caller through the website, which keeps only printable ASCII.
+        raise RequestLimit(f"Provide 1 to {most_messages:,} chat messages")
     tools = body.get("tools")
     if tools is not None:
-        if not tools_enabled() or not isinstance(tools, list) or not 1 <= len(tools) <= 32:
-            raise ValueError("Agent tools require the GGUF runner and 1–32 function definitions")
+        if not tools_enabled() or not isinstance(tools, list) or not 1 <= len(tools) <= most_tools:
+            raise RequestLimit(f"Agent tools require the GGUF or vLLM runner and 1 to {most_tools} function definitions")
         names = set()
         for tool in tools:
             if not isinstance(tool, dict) or set(tool) != {"type", "function"} or tool["type"] != "function":
@@ -1424,10 +1464,10 @@ def validate_chat(body):
             if not isinstance(name, str) or not re.fullmatch(r"[A-Za-z0-9_-]{1,80}", name) or name in names:
                 raise ValueError("Invalid or duplicate function name")
             names.add(name)
-            if not isinstance(function.get("parameters"), dict) or len(json.dumps(function)) > 16384:
-                raise ValueError("Invalid or oversized tool schema")
-        if len(json.dumps(tools)) > 49152:
-            raise ValueError("Tool definitions exceed 48 KiB")
+            if not isinstance(function.get("parameters"), dict) or len(json.dumps(function)) > (32768 if agent else 16384):
+                raise RequestLimit("Invalid or oversized tool schema (at most " + ("32" if agent else "16") + " KiB each)")
+        if len(json.dumps(tools)) > (131072 if agent else 49152):
+            raise RequestLimit("Tool definitions exceed " + ("128" if agent else "48") + " KiB")
         choice = body.get("tool_choice", "auto")
         valid_choice = choice in ("auto", "none", "required") if isinstance(choice, str) else (isinstance(choice, dict) and choice.get("type") == "function" and isinstance(choice.get("function"), dict) and choice["function"].get("name") in names)
         if not valid_choice:
@@ -1436,16 +1476,30 @@ def validate_chat(body):
         raise ValueError("tool_choice requires tools")
     if "parallel_tool_calls" in body and type(body["parallel_tool_calls"]) is not bool:
         raise ValueError("parallel_tool_calls must be a boolean")
-    if "stream_options" in body and body["stream_options"] != {"include_usage": True}:
-        raise ValueError("Only include_usage stream options are supported")
+    if "stream_options" in body:
+        options = body["stream_options"]
+        if not isinstance(options, dict) or any(not isinstance(value, bool) for value in options.values()):
+            raise ValueError("Only include_usage stream options are supported")
+        # Usage always ends the stream here; continuous_usage_stats and the like are dropped.
+        body["stream_options"] = {"include_usage": True}
     total = 0
     pending_calls = set()
     for message in messages:
-        if not isinstance(message, dict) or set(message) - {"role", "content", "tool_calls", "tool_call_id", "name"} or "role" not in message:
+        if not isinstance(message, dict) or "role" not in message:
             raise ValueError("Messages require role and content")
+        for field in set(message) - MESSAGE_FIELDS:
+            # cache_control, reasoning_content, refusal, annotations...: hints this server does not use.
+            del message[field]
+        if message["role"] == "assistant" and "tool_calls" in message and message["tool_calls"] in ([], None):
+            # vLLM answers plain text with "tool_calls": [], and clients send a reply back as it came:
+            # no calls is the same as no field. Other values are still checked below.
+            del message["tool_calls"]
+        if message["role"] == "developer":
+            # OpenAI's newer name for the system role (Codex, pi-ai clients).
+            message["role"] = "system"
         role, content = message["role"], message.get("content")
         if isinstance(content, list):
-            if any(not isinstance(part, dict) or set(part) != {"type", "text"} or part["type"] != "text" or not isinstance(part["text"], str) for part in content):
+            if any(not isinstance(part, dict) or part.get("type") != "text" or not isinstance(part.get("text"), str) for part in content):
                 raise ValueError("Only text message parts are supported")
             content = message["content"] = "\n".join(part["text"] for part in content)
         if role not in ("system", "user", "assistant", "tool") or not isinstance(content, str) and not (role == "assistant" and content is None and message.get("tool_calls")):
@@ -1468,17 +1522,23 @@ def validate_chat(body):
                 if not isinstance(function, dict) or not isinstance(function.get("arguments"), str) or not isinstance(function.get("name"), str) or not re.fullmatch(r"[A-Za-z0-9_-]{1,80}", function["name"]):
                     raise ValueError("Invalid tool call function")
                 pending_calls.add(call["id"])
-        total += len(content or "") + len(json.dumps(message.get("tool_calls", [])))
-    if total > (131072 if os.environ.get("YOUGORI_MODEL_AGENT_API") == "1" else 32768):
-        raise ValueError("Conversation exceeds 32,768 characters; start a new chat")
+        total += len(content or "") + (len(json.dumps(message["tool_calls"])) if "tool_calls" in message else 0)
+    # Characters, a cheap bound before the tokenizer; the real limit is the token count against
+    # the context (prepare_gguf, fit()). A 30K-token agent turn (Plandex's) runs past 130K characters;
+    # a larger window (--context) allows about 6 characters a token.
+    most = max(262144, 6 * LLAMA["context"]) if agent else 32768
+    # With truncate an agent's conversation may run longer: the oldest turns are dropped to fit the
+    # context (fit()), within the request body limit.
+    if total > most and not (agent and truncate):
+        raise RequestLimit(f"Conversation exceeds {most:,} characters; start a new chat")
     if not any(m["role"] == "user" for m in messages):
         raise ValueError("Include at least one user message")
     if "max_tokens" in body and "max_completion_tokens" in body and body["max_tokens"] != body["max_completion_tokens"]:
         raise ValueError("Conflicting token limits")
-    tokens = body.get("max_tokens", body.get("max_completion_tokens", 256))
+    tokens = body.get("max_tokens", body.get("max_completion_tokens", 4096 if agent else 256))
     temperature = body.get("temperature", 0.7)
     if type(tokens) is not int or not 1 <= tokens <= 4096:
-        raise ValueError("max_tokens must be 1–4096")
+        raise RequestLimit("max_tokens must be 1 to 4,096")
     if type(temperature) not in (int, float) or not 0 <= temperature <= 2:
         raise ValueError("temperature must be 0–2")
     if "top_p" in body and (type(body["top_p"]) not in (int, float) or not 0 < body["top_p"] <= 1):
@@ -1486,6 +1546,33 @@ def validate_chat(body):
     if "stop" in body and not (isinstance(body["stop"], str) or isinstance(body["stop"], list) and len(body["stop"]) <= 8 and all(isinstance(s, str) and len(s) <= 256 for s in body["stop"])):
         raise ValueError("Invalid stop sequences")
     return messages, tokens, temperature, stream, truncate
+
+
+def default_reply(body):
+    """Whether the reply length is this server's default, the caller having set no max_tokens. The
+    default then needs one token of room and ends where the context does, so it never refuses or
+    shortens a conversation: the agent API's 4096 refused every request to a 4096-token model."""
+    return "max_tokens" not in body and "max_completion_tokens" not in body
+
+
+# With the agent flag, the least room an explicit reply length needs. A coding agent's max_tokens is
+# its own idea of the model (Strix asks 8,192 of a model LiteLLM does not know, which the connector
+# trims to 4,096 by a character estimate), so a turn whose conversation leaves less than it asked
+# is given what the context leaves, as llama.cpp and Ollama do, not a refusal the agent cannot read.
+AGENT_REPLY_FLOOR = 1024
+
+
+def reply_room(body, count, truncate, context):
+    """(room, capped): the reply room fit() keeps, and whether the reply is then cut to what the
+    context leaves. A default length needs one token, so it never refuses; with truncate it keeps
+    up to half the context, so dropped turns still leave a reply. An explicit length with the agent
+    flag needs AGENT_REPLY_FLOOR at most (half the context with truncate). Any other explicit
+    length needs all of it, as before."""
+    if not default_reply(body) and not agent_limits():
+        return count, False
+    if truncate:
+        return max(1, min(count, context // 2)), True
+    return (1 if default_reply(body) else min(count, AGENT_REPLY_FLOOR)), True
 
 
 @timed_stage("checkpoint")
@@ -2022,7 +2109,9 @@ def llama_json(path, body=None, timeout=30):
 # carried by GGUF and vLLM runners only and executed into this namespace before their first load.
 # Injected source must match the digest this server ships (a bundle's integrity is the catalog's,
 # re-hashed against its pin at every open); a server run from a source tree reads the file beside it.
-BACKENDS_SHA256 = "d27929b259b47e3ad9a9f77f2eb79010306f7fad6a7a57b53d1dabfd0e0c8a26"
+# The digest is of the text the engine sends (model_runner.rs backends_text: LF, less the comment-only
+# lines); after an edit, the Rust digest test's message names the line to write here.
+BACKENDS_SHA256 = "085151b847f8a832c543978b028887d1763beb34237b3fab504ade52ce2c2789"
 
 
 # The media loaders and job runner (model_runner/media_backends.py), for media runners only.
@@ -2366,26 +2455,59 @@ GPU_MEMORY_REFUSAL = {"code": "yougori_gpu_memory", "message": "Not enough GPU m
 
 def fit(messages, count, truncate, context, measure):
     """Measures the conversation, dropping the oldest turns when truncate is set. Returns (measured, tokens, dropped)."""
-    dropped = 0
     if count >= context:
         raise ContextRefusal("max_tokens must be below this model's " + str(context) + "-token context window", context, count=count)
+
+    def exceeds(tokens):
+        return ContextRefusal("Conversation exceeds this model's " + str(context) + "-token context window; shorten it or reduce max_tokens",
+                              context, tokens=tokens, count=count)
     messages = list(messages)
-    while True:
-        measured, tokens = measure(messages)
-        if tokens + count <= context:
-            return measured, tokens, dropped
-        turns = [i for i, m in enumerate(messages) if m["role"] != "system"]
-        if not truncate or len(turns) <= 1:
-            raise ContextRefusal("Conversation exceeds this model's " + str(context) + "-token context window; shorten it or reduce max_tokens", context, tokens=tokens, count=count)
-        # Remove the oldest turn and anything before the next user message so roles still alternate.
-        del messages[turns[0]]
-        dropped += 1
-        while True:
-            rest = [i for i, m in enumerate(messages) if m["role"] != "system"]
-            if len(rest) <= 1 or messages[rest[0]]["role"] == "user":
-                break
-            del messages[rest[0]]
-            dropped += 1
+    measured, tokens = measure(messages)
+    if tokens + count <= context:
+        return measured, tokens, 0
+    turns = [i for i, m in enumerate(messages) if m["role"] != "system"]
+    if not truncate or len(turns) <= 1:
+        raise exceeds(tokens)
+    # A shortened conversation starts at a later user message, so roles still alternate, or at last
+    # at the newest message alone; every system message stays. Fewer turns never take more tokens,
+    # so the earliest start that fits is found by galloping from the oldest (0, 1, 3, 7...) and a
+    # binary search inside the bracket that fits: a conversation just past the window costs about
+    # as many measures as dropping one turn at a time did, a long one a few dozen at most. One
+    # measure per dropped turn re-tokenized a long agent session hundreds of times in a queue slot.
+    starts = [k for k in range(1, len(turns)) if messages[turns[k]]["role"] == "user"]
+    if starts[-1:] != [len(turns) - 1]:
+        starts.append(len(turns) - 1)
+    results = {}
+
+    def settles(j):
+        # Where dropping one turn at a time would stop: this start fits, or measuring it fails (a
+        # template can refuse a conversation that no longer starts with the user). An earlier start
+        # that fits still wins over a later failure, as it did.
+        if j not in results:
+            kept = [m for i, m in enumerate(messages) if i >= turns[starts[j]] or m["role"] == "system"]
+            try:
+                results[j] = measure(kept)
+            except Exception as error:
+                results[j] = error
+        return isinstance(results[j], Exception) or results[j][1] + count <= context
+
+    last = len(starts) - 1
+    # The newest message alone is the least there is to send: when it does not fit, nothing does.
+    if not settles(last):
+        raise exceeds(results[last][1])
+    low, high, step = 0, 0, 1
+    while not settles(high):
+        low, high, step = high + 1, min(last, high + step), step * 2
+    while low < high:
+        middle = (low + high) // 2
+        if settles(middle):
+            high = middle
+        else:
+            low = middle + 1
+    if isinstance(results[high], Exception):
+        raise results[high]
+    measured, tokens = results[high]
+    return measured, tokens, starts[high]
 
 
 class Cancelled:
@@ -2503,6 +2625,99 @@ def non_streaming_output(inputs, kwargs, meter, operation=None):
     return result["output"]
 
 
+# Gemma 4 writes its thinking as <|channel>thought\n…<channel|> before its answer, and llama.cpp
+# (run with --reasoning-format none) leaves that block in the content. The blocks a reply opens
+# with become reasoning_content, less their first line (the channel's name); any other reply
+# passes through untouched. feed() takes one streamed piece and returns (content, reasoning); a
+# piece that could still begin a marker waits for the next one, and end() returns what waited.
+CHANNEL_OPEN, CHANNEL_CLOSE = "<|channel>", "<channel|>"
+
+
+def marker_tail(text, marker):
+    # How many characters at the end of text could begin marker (they wait for the next piece).
+    return next((n for n in range(min(len(text), len(marker) - 1), 0, -1) if text.endswith(marker[:n])), 0)
+
+
+class LeadingChannels:
+    def __init__(self):
+        self.state, self.held, self.altered = "start", "", False
+
+    def feed(self, text):
+        text, self.held, reasoning = self.held + text, "", ""
+        while text:
+            if self.state == "off":
+                return text, reasoning
+            if self.state == "start":
+                # The answer after a block starts without its blank lines.
+                text = text.lstrip() if self.altered else text
+                if text.startswith(CHANNEL_OPEN):
+                    self.state, self.altered, text = "name", True, text[len(CHANNEL_OPEN):]
+                elif CHANNEL_OPEN.startswith(text):
+                    self.held = text
+                    break
+                else:
+                    self.state = "off"
+                continue
+            close, newline = text.find(CHANNEL_CLOSE), text.find("\n")
+            if self.state == "name" and newline != -1 and (close == -1 or newline < close):
+                self.state, text = "inside", text[newline + 1:]
+            elif close != -1:
+                reasoning += text[:close] if self.state == "inside" else ""
+                self.state, text = "start", text[close + len(CHANNEL_CLOSE):]
+            else:
+                keep = marker_tail(text, CHANNEL_CLOSE)
+                reasoning += text[:len(text) - keep] if self.state == "inside" else ""
+                self.held = text[len(text) - keep:]
+                break
+        return "", reasoning
+
+    def end(self):
+        held, self.held = self.held, ""
+        return (held, "") if self.state in ("start", "off") else ("", held if self.state == "inside" else "")
+
+
+# Gemma 4 writes a tool call as <|tool_call>call:NAME{ARGS}<tool_call|>. llama.cpp returns it
+# structured, except after a channel block the reply opens with: then it stays in the content and
+# the agent sees no call (Strix parked its agent). GemmaCalls takes each call in the text after the
+# leading channel blocks that names a function the request offered and parses (gemma_call) into
+# `made`, as OpenAI tool calls; feed() returns the text around them, holding back what could still
+# become a call, and feed(text, True) ends the reply. Anything else stays the text it was.
+CALL_OPEN, CALL_CLOSE = "<|tool_call>", "<tool_call|>"
+
+
+# ARGS as Gemma's chat template writes them (format_argument): key:value pairs, keys bare or
+# quoted; strings in <|"|>…<|"|> (or JSON's quotes, kept as they are), numbers, true/false/null,
+# {…} and […]. Each <|"|> string and each bare key (a word before a colon) becomes a JSON string
+# (m.lastindex: the group that matched), all else stays: what JSON then reads (an object, as it
+# starts with {) is the call's arguments. Not a call: no match (None[2] is a TypeError), text JSON
+# refuses, a function not offered.
+def gemma_call(text, names):
+    match = re.fullmatch(r"\s*call:([\w-]+)(\{.*\})\s*", text, re.S)
+    try:
+        value = json.loads(re.sub(r'<\|"\|>(.*?)<\|"\|>|("(?:\\.|[^"\\])*")|([\w-]+)(?=\s*:)', lambda m: m[2] or json.dumps(m[m.lastindex]), match[2], flags=re.S), strict=False)
+    except (TypeError, ValueError):
+        return None
+    return {"id": "call_" + secrets.token_hex(12), "type": "function", "function": {"name": match[1], "arguments": json.dumps(value)}} if match[1] in names else None
+
+
+class GemmaCalls:
+    def __init__(self, names):
+        self.names, self.held, self.made = names, "", []
+
+    def take(self, match):
+        call = gemma_call(match[1], self.names)
+        return self.made.append(call) or "" if call else match[0]
+
+    def feed(self, text, last=False):
+        text = re.sub(r"<\|tool_call>(.*?)<tool_call\|>", self.take, self.held + text, flags=re.S)
+        # What may still become a call waits: from a last open marker not yet closed, or the
+        # start of one at the end; nothing waits once the reply ended or with no tools offered.
+        start = text.rfind(CALL_OPEN)
+        cut = len(text) if last or not self.names else start if start >= 0 and CALL_CLOSE not in text[start:] else len(text) - marker_tail(text, CALL_OPEN)
+        self.held = text[cut:]
+        return text[:cut]
+
+
 def generate_gguf(body, handler, meter):
     """generate() for llama.cpp and vLLM: the same validation, limits and reply shape. The queue
     admits as many requests as the backend has slots, and a shared llama.cpp KV pool is reserved
@@ -2516,7 +2731,10 @@ def generate_gguf(body, handler, meter):
     try:
         if not pooled:
             RUNNER_TIMINGS.boundary("admittedMs")
-        messages, input_tokens, dropped = prepare_gguf(messages, count, truncate, body.get("tools"))
+        room, capped = reply_room(body, count, truncate, LLAMA["context"])
+        messages, input_tokens, dropped = prepare_gguf(messages, room, truncate, body.get("tools"))
+        if capped:
+            count = max(1, min(count, LLAMA["context"] - input_tokens))
         if pooled:
             # Admitted once its cells are reserved; counting them needs the prompt's tokens.
             with RUNNER_TIMINGS.stage("model_wait"):
@@ -2526,6 +2744,8 @@ def generate_gguf(body, handler, meter):
         extra = {"truncated_messages": dropped, "context_window": LLAMA["context"]} if truncate else {}
         limit = STREAM_MAX_SECONDS if stream else GENERATION_MAX_SECONDS
         request = {"messages": messages, "max_tokens": count, "temperature": temperature, "stream": stream}
+        # The functions a Gemma call left in the text may name (GemmaCalls).
+        names = () if body.get("tool_choice") == "none" else {tool["function"]["name"] for tool in body.get("tools") or ()}
         for key in ("tools", "tool_choice", "parallel_tool_calls", "top_p", "stop", *CHAT_SAMPLING):
             if key in body:
                 request[key] = body[key]
@@ -2558,7 +2778,7 @@ def generate_gguf(body, handler, meter):
                 meter["outcome"] = "invalid" if response.status == 400 else "error"
                 return (400 if response.status == 400 else 500), {"error": {"message": detail}}
             if stream:
-                stream_gguf(handler, response, input_tokens, count, extra, meter, trace, served=request.get("model", MODEL))
+                stream_gguf(handler, response, input_tokens, count, extra, meter, trace, served=request.get("model", MODEL), names=names)
                 timings = meter.pop("_timings", None)
                 if observed is not None and meter.get("outcome") == "ok":
                     backend_observation_finish(observed, timings)
@@ -2577,8 +2797,23 @@ def generate_gguf(body, handler, meter):
                     or not isinstance(choice.get("finish_reason"), str) or not choice["finish_reason"]
                     or message.get("content") is not None and not isinstance(message["content"], str)):
                 raise RuntimeError("Invalid backend completion")
-            # Preserve terminal/refusal/tool semantics for host validation; never invent stop.
-            message = {key: message[key] for key in ("role", "content", "tool_calls", "function_call", "refusal", "reasoning_content") if key in message}
+            # Preserve terminal/refusal/tool semantics for host validation; never invent stop. vLLM's
+            # empty tool_calls is left out, as the stream leaves it out (stream_gguf).
+            message = {key: message[key] for key in ("role", "content", "tool_calls", "function_call", "refusal", "reasoning_content")
+                       if key in message and not (key == "tool_calls" and not message[key])}
+            if isinstance(message.get("content"), str):
+                channels = LeadingChannels()
+                (text, thought), (rest, more) = channels.feed(message["content"]), channels.end()
+                if channels.altered:
+                    message["content"] = text + rest
+                    if thought + more:
+                        message["reasoning_content"] = (message.get("reasoning_content") or "") + thought + more
+                # A reply llama.cpp returned structured keeps its calls; space alone is no content.
+                calls = GemmaCalls(() if "tool_calls" in message else names)
+                text = calls.feed(message["content"], True)
+                if calls.made:
+                    message.update(content=text.strip() and text, tool_calls=calls.made)
+                    choice["finish_reason"] = "tool_calls"
             generated = int((value.get("usage") or {}).get("completion_tokens") or 0)
             meter.update(outcome="ok", completion_tokens=generated)
             if observed is not None:
@@ -2611,7 +2846,7 @@ def generate_gguf(body, handler, meter):
                 INFERENCE_QUEUE.unreserve(reserved)
 
 
-def stream_gguf(handler, response, input_tokens, count, extra, meter, trace=None, served=MODEL):
+def stream_gguf(handler, response, input_tokens, count, extra, meter, trace=None, served=MODEL, names=()):
     """Relays llama.cpp's stream as this server's own chunks; closing it stops generation."""
     ident, created = completion_id(), int(time.time())
     handler.send_response(200)
@@ -2636,6 +2871,13 @@ def stream_gguf(handler, response, input_tokens, count, extra, meter, trace=None
     def chunk(delta, finish=None, **more):
         return {"id": ident, "object": "chat.completion.chunk", "created": created, "model": served, "choices": [{"index": 0, "delta": delta, "finish_reason": finish}], **more}
 
+    # A Gemma call taken from the text is one tool_call delta of its own index, whole.
+    def said(text, thought, last=False):
+        made = len(calls.made)
+        delta = {"reasoning_content": thought, "content": calls.feed(text, last), "tool_calls": [{"index": index, **call} for index, call in enumerate(calls.made) if index >= made]}
+        return {key: value for key, value in delta.items() if value}
+
+    channels, calls = LeadingChannels(), GemmaCalls(names)
     generated, finish, failed, usage, timings = 0, None, None, None, None
     deadline = time.monotonic() + STREAM_MAX_SECONDS
     if not send(chunk({"role": "assistant", "content": ""})):
@@ -2664,6 +2906,8 @@ def stream_gguf(handler, response, input_tokens, count, extra, meter, trace=None
             if choices:
                 delta = choices[0].get("delta") or {}
                 forwarded = {key: delta[key] for key in ("content", "tool_calls") if delta.get(key)}
+                if isinstance(forwarded.get("content"), str):
+                    forwarded = {**said(*channels.feed(forwarded.pop("content"))), **forwarded}
                 if forwarded and not send(chunk(forwarded)):
                     meter.update(outcome="cancelled", completion_tokens=generated)
                     return
@@ -2671,6 +2915,9 @@ def stream_gguf(handler, response, input_tokens, count, extra, meter, trace=None
                     RUNNER_TIMINGS.first_output()
                 finish = choices[0].get("finish_reason") or finish
             if trace is not None:
+                # Text moved out of the content has no proven byte map.
+                if channels.altered or calls.made:
+                    trace.valid = False
                 trace.observe(event, bool(forwarded), flushed_at if forwarded else None)
             if event.get("usage"):
                 usage = event["usage"]
@@ -2686,8 +2933,12 @@ def stream_gguf(handler, response, input_tokens, count, extra, meter, trace=None
         send({"error": {"message": failed}})
     else:
         meter["outcome"] = "ok"
+        held = said(*channels.end(), True)
+        if held and not send(chunk(held)):
+            meter["outcome"] = "cancelled"
+            return
         cached = backend_cached(usage, timings, input_tokens)
-        if not send(chunk({}, finish or ("length" if generated >= count else "stop"),
+        if not send(chunk({}, "tool_calls" if calls.made else finish or ("length" if generated >= count else "stop"),
                           usage={"prompt_tokens": input_tokens, "completion_tokens": generated, "total_tokens": input_tokens + generated, **cache_details(cached), **extra})):
             meter["outcome"] = "cancelled"
             return
@@ -2844,7 +3095,10 @@ def generate(body, handler, meter):
         return 429, {"error": {"message": "The GPU is busy with another response; retry shortly"}}
     try:
         RUNNER_TIMINGS.boundary("admittedMs")
-        inputs, input_tokens, dropped = prepare(messages, count, truncate)
+        room, capped = reply_room(body, count, truncate, context_window())
+        inputs, input_tokens, dropped = prepare(messages, room, truncate)
+        if capped:
+            count = max(1, min(count, context_window() - input_tokens))
         meter["prompt_tokens"] = input_tokens
         pad = TOKENIZER.pad_token_id if TOKENIZER.pad_token_id is not None else TOKENIZER.eos_token_id
         kwargs = {"max_new_tokens": count, "max_time": STREAM_MAX_SECONDS if stream else GENERATION_MAX_SECONDS, "do_sample": temperature > 0, "pad_token_id": pad}
@@ -3393,8 +3647,8 @@ class Handler(BaseHTTPRequestHandler):
                 with RUNNER_TIMINGS.stage("request_validation"):
                     offered = serving_offer(self.headers) if self.serving_authenticated else None
                     length = int(self.headers.get("Content-Length", "0"))
-                    if not 0 < length <= (262144 if os.environ.get("YOUGORI_MODEL_AGENT_API") == "1" else 65536) or self.headers.get("Transfer-Encoding"):
-                        raise ValueError("Send a JSON body of at most 64 KiB with Content-Length")
+                    if not 0 < length <= (max(524288, 8 * LLAMA["context"]) if agent_limits() else 65536) or self.headers.get("Transfer-Encoding"):
+                        raise RequestLimit("Send a JSON body of at most " + ("512" if agent_limits() else "64") + " KiB with Content-Length")
                     raw = self.rfile.read(length)
                     if len(raw) != length:
                         raise ValueError("Incomplete request")
@@ -3430,7 +3684,7 @@ class Handler(BaseHTTPRequestHandler):
             except ServingAgreementError as error:
                 meter["outcome"] = "invalid"
                 self.reply(error.status, {"error": {"code": error.code, "message": error.message}})
-            except (ContextRefusal, StructuredOutputRefusal) as error:
+            except (ContextRefusal, StructuredOutputRefusal, RequestLimit) as error:
                 meter["outcome"] = "invalid"
                 self.reply(400, error.body())
             except (ValueError, TypeError):

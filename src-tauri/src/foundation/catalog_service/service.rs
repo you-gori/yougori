@@ -14,8 +14,8 @@ use serde::Serialize;
 use crate::foundation::catalog::{
     ArtifactClass, ArtifactVerifier, Catalog, CatalogConfig, CatalogLimits, CatalogSummary,
     ContentDescriptor, FormatRefusal, GcRefusal, GcReport, IntegrityFailure, ObjectBytes, ObjectId,
-    OpenReport, PublisherId, Scope, StorageFailure, TrustPolicy, VerifierRegistry,
-    VerifierRejection,
+    OpenFailure, OpenReport, PublisherId, Scope, StorageFailure, TrustPolicy, VerifierRegistry,
+    VerifierRejection, LOCK_FILE,
 };
 use crate::foundation::ids::Clock;
 use crate::foundation::signing::{
@@ -173,6 +173,9 @@ pub struct ClassAdmission {
 pub enum OpenRefusal {
     /// The root is relative, so it would depend on the engine's working directory.
     NotAbsolute { root: String },
+    /// Another Yougori engine has the catalog in this root open: it holds the root's
+    /// [`LOCK_FILE`]. Nothing under the root was read, created or removed.
+    InUse { root: String },
     /// The root could not be created or read; nothing was changed beyond that step.
     Storage { failure: StorageFailure },
 }
@@ -183,6 +186,11 @@ impl fmt::Display for OpenRefusal {
             Self::NotAbsolute { root } => {
                 write!(f, "the catalog root {root} is not an absolute path")
             }
+            Self::InUse { root } => write!(
+                f,
+                "the catalog root {root} is in use by another Yougori engine, which holds its \
+                 {LOCK_FILE}; this engine left it untouched"
+            ),
             Self::Storage { failure } => failure.fmt(f),
         }
     }
@@ -567,8 +575,14 @@ impl CatalogService {
         for class in ArtifactClass::ALL {
             classes.entry(class).or_insert(ClassVerifier::NotOffered);
         }
-        let (catalog, report) = Catalog::open(root, catalog_config, registry, clock)
-            .map_err(|failure| OpenRefusal::Storage { failure })?;
+        let (catalog, report) = Catalog::open(root, catalog_config, registry, clock).map_err(
+            |failure| match failure {
+                OpenFailure::InUse { root } => OpenRefusal::InUse {
+                    root: root.display().to_string(),
+                },
+                OpenFailure::Storage(failure) => OpenRefusal::Storage { failure },
+            },
+        )?;
         let holder = Arc::new(hold(catalog));
         let shared: Arc<dyn CatalogHolder> = holder.clone();
         let service = Self {

@@ -31,6 +31,12 @@ pub const LINK_SECRET_NAME: &str = "link-secret";
 /// endpoints (names, hosts, ports; no secret), handed to the guest through fw_cfg.
 pub const EGRESS_ENDPOINTS_NAME: &str = "egress-endpoints";
 pub const WORKLOAD_NAME: &str = "workload";
+/// The network filter's sockets in the private control directory, which QEMU serves when the
+/// VM has a network card: the frames the guest sends (0) and their way on to the user
+/// network (1); the frames the user network sends (2) and their way on to the guest (3). The
+/// host reads and judges every frame between them (`qemu_host::network_filter`). No longer
+/// than the link socket's name, so the directory's socket bound covers them.
+pub const NETWORK_SOCKET_NAMES: [&str; 4] = ["net0.sock", "net1.sock", "net2.sock", "net3.sock"];
 /// Most vCPUs a profile gives a guest (the bound today's launcher clamps to).
 pub const MAX_VCPU_COUNT: u16 = 255;
 /// One mebibyte, the granularity of guest memory.
@@ -312,6 +318,8 @@ pub struct PrivateDirectory {
     egress_endpoints: HostPath,
     #[serde(skip_serializing)]
     workload: HostPath,
+    #[serde(skip_serializing)]
+    network_sockets: [HostPath; 4],
 }
 
 impl PrivateDirectory {
@@ -323,7 +331,13 @@ impl PrivateDirectory {
         let link_secret = path.join(LINK_SECRET_NAME)?;
         let egress_endpoints = path.join(EGRESS_ENDPOINTS_NAME)?;
         let workload = path.join(WORKLOAD_NAME)?;
-        for socket in [&qmp_socket, &link_socket] {
+        let network_sockets = [
+            path.join(NETWORK_SOCKET_NAMES[0])?,
+            path.join(NETWORK_SOCKET_NAMES[1])?,
+            path.join(NETWORK_SOCKET_NAMES[2])?,
+            path.join(NETWORK_SOCKET_NAMES[3])?,
+        ];
+        for socket in [&qmp_socket, &link_socket].into_iter().chain(&network_sockets) {
             let max_bytes = socket.style().max_socket_path_bytes();
             if socket.as_str().len() > max_bytes {
                 return Err(PathError::SocketPathTooLong {
@@ -339,6 +353,7 @@ impl PrivateDirectory {
             link_secret,
             egress_endpoints,
             workload,
+            network_sockets,
         })
     }
 
@@ -365,6 +380,11 @@ impl PrivateDirectory {
 
     pub fn workload(&self) -> &HostPath {
         &self.workload
+    }
+
+    /// The network filter's four sockets, in the order of [`NETWORK_SOCKET_NAMES`].
+    pub fn network_sockets(&self) -> &[HostPath; 4] {
+        &self.network_sockets
     }
 }
 

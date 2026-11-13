@@ -240,6 +240,7 @@ impl Production {
             gpu: false,
             gpu_memory: Vec::new(),
             internet: false,
+            targets: None,
             owner_session: false,
             tenant: TenantId::new(TENANT).map_err(|error| error.to_string())?,
             resources: VmResources {

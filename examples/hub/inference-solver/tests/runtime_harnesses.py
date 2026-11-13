@@ -48,13 +48,14 @@ class TextModel(Model):
         if getattr(self.server,"harness","") == "hexstrike":
             results = [m for m in data["messages"] if m.get("role") == "tool"]
             if not results:
-                completed = "create_file"
-                content = {"role":"assistant","content":None,"tool_calls":[{"id":"fixture-file","type":"function",
-                    "function":{"name":"create_file","arguments":json.dumps({"filename":"solver-check.txt","content":"SOLVER_OK"})}}]}
+                # A tool the terminal always offers (hexstrike_cli.WEB_TOOLS): it runs a command in the VM.
+                completed = "execute_command"
+                content = {"role":"assistant","content":None,"tool_calls":[{"id":"fixture-command","type":"function",
+                    "function":{"name":"execute_command","arguments":json.dumps({"command":"printf 'SOLVER_'; printf 'TOOL_OK'"})}}]}
             else:
                 mcp = json.loads(results[-1]["content"])
                 value = json.loads(next(c["text"] for c in mcp["content"] if c.get("type") == "text"))
-                assert value.get("success") is True, value
+                assert value.get("success") is True and "SOLVER_TOOL_OK" in value.get("stdout", ""), value
                 self.server.tool_checked = True
         if complete_tool:
             if len(self.server.calls) == 1:
@@ -114,7 +115,7 @@ PROMPTS = {
     "pentagi": ["--print", "Read only the local workspace and report SOLVER_OK. Do not use the network."],
     "strix": ["--print", "Inspect only README.md. Return a completed report saying SOLVER_OK; do not create subagents or use the network."],
     "plandex": ["--print", "Say SOLVER_OK. Do not change any files."],
-    "hexstrike": ["--print", "Create solver-check.txt containing SOLVER_OK, then report completion."],
+    "hexstrike": ["--print", "Run a command that prints SOLVER_TOOL_OK, then report completion."],
     "pi": ["--print", "Say SOLVER_OK. Do not call tools."],
     "opencode": ["run", "Say SOLVER_OK. Do not call tools."],
     "kilo": ["run", "Say SOLVER_OK. Do not call tools."],
@@ -125,7 +126,7 @@ PROMPTS = {
     "grok": ["--print", "Say SOLVER_OK. Do not call tools."],
     "deepseek": ["--print", "Say SOLVER_OK. Do not call tools."],
     "interpreter": ["--print", "Say SOLVER_OK. Do not call tools."],
-    "pentestgpt": ["--print", "Say SOLVER_OK. Do not call tools."],
+    # PentestGPT has no one-shot mode (runtime.py refuses --print): it is checked in its terminal.
     "swe": ["--problem_statement.text", "Say SOLVER_OK and submit. Do not modify any files."],
     "aider": ["--yes-always", "--no-git", "--message", "Say SOLVER_OK. Do not call tools."],
     "goose": ["run", "--text", "Say SOLVER_OK. Do not call tools."],
@@ -168,7 +169,7 @@ def main():
         assert fixture.model.calls, "The real harness made no inference request."
         if args.harness in ('pi', 'shannon'):
             assert getattr(fixture.model, 'contract_checked', False), 'Client did not use the local chat contract.'
-        if args.harness == "hexstrike": assert getattr(fixture.model,"tool_checked",False), "MCP file tool did not complete."
+        if args.harness == "hexstrike": assert getattr(fixture.model,"tool_checked",False), "HexStrike's command tool did not return its output to the model."
         if args.harness == "strix": assert getattr(fixture.model,"tool_checked",False), "The real Strix guest command did not return its output to the model."
         if args.harness == "pentagi": assert getattr(fixture.model,"tool_checked",False), "The real PentAGI guest command did not return its output to the model."
         print("VM_HARNESS_OK: " + args.harness, flush=True)

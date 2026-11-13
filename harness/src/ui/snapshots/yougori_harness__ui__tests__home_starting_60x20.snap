@@ -1,0 +1,25 @@
+---
+source: src/ui/tests.rs
+expression: narrow
+---
+
+  ▀▄ ▄▀ ▄▀▀▄ █  █ ▄▀▀▀ ▄▀▀▄ █▀▀▄ ▀█▀
+    █   █  █ █  █ █ ▀█ █  █ █▀█   █     OpenCode  v1.0.0
+    ▀    ▀▀   ▀▀   ▀▀▀  ▀▀  ▀  ▀ ▀▀▀    qwen3-coder-30b
+
+  ⠋ Starting OpenCode…  2.4s
+
+
+
+
+
+
+
+
+
+╭──────────────────────────────────────────────────────────╮
+│ › Ask OpenCode anything                                  │
+╰──────────────────────────────────────────────────────────╯
+ enter send   ctrl+p commands   ctrl+c quit
+ ⠋ starting 2.4s · OpenCode · qwen3-coder-30b
+[cursor 4,16]

@@ -92,6 +92,7 @@ pub enum SocketOperation {
     Send,
     Shutdown,
     PeerProcessId,
+    Wait,
 }
 
 impl fmt::Display for SocketOperation {
@@ -107,6 +108,7 @@ impl fmt::Display for SocketOperation {
             Self::Send => "sending",
             Self::Shutdown => "shutting the connection down",
             Self::PeerProcessId => "reading the peer's process id",
+            Self::Wait => "waiting for the socket",
         })
     }
 }
@@ -411,6 +413,51 @@ impl UnixStream {
         }
     }
 
+    /// Waits up to `timeout` (at most [`MAX_SOCKET_TIMEOUT`]) until `direction` can go on
+    /// without blocking: something to read, or the peer's end, for [`Direction::Receive`];
+    /// room to send for [`Direction::Send`]; either for [`Direction::Both`]. Whether it can.
+    /// Nothing is read or written, so a wait that ends without readiness leaves the stream
+    /// usable; a non-blocking stream then reads or writes, or reports the end or the error.
+    pub fn wait_ready(&self, direction: Direction, timeout: Duration) -> Result<bool, SocketError> {
+        self.check_usable().map_err(|_| SocketError::UnusableAfterTimeout)?;
+        let timeout = timeout.min(MAX_SOCKET_TIMEOUT);
+        #[cfg(windows)]
+        {
+            self.socket.wait(direction, timeout)
+        }
+        #[cfg(unix)]
+        {
+            use std::os::fd::AsRawFd;
+            let events = match direction {
+                Direction::Receive => libc::POLLIN,
+                Direction::Send => libc::POLLOUT,
+                Direction::Both => libc::POLLIN | libc::POLLOUT,
+            };
+            let mut descriptor = libc::pollfd {
+                fd: self.socket.as_raw_fd(),
+                events,
+                revents: 0,
+            };
+            let milliseconds = libc::c_int::try_from(timeout.as_millis()).unwrap_or(libc::c_int::MAX);
+            loop {
+                // SAFETY: one live pollfd for the call's duration.
+                let ready = unsafe { libc::poll(&mut descriptor, 1, milliseconds) };
+                if ready >= 0 {
+                    return Ok(ready > 0);
+                }
+                let error = io::Error::last_os_error();
+                if error.kind() != io::ErrorKind::Interrupted {
+                    return Err(os_error(SocketOperation::Wait, &error));
+                }
+            }
+        }
+        #[cfg(not(any(windows, unix)))]
+        {
+            let _ = (direction, timeout);
+            match self.never {}
+        }
+    }
+
     /// Ends `direction` of the connection: no more receiving, sending, or either.
     pub fn shutdown(&self, direction: Direction) -> Result<(), SocketError> {
         #[cfg(windows)]
@@ -614,10 +661,10 @@ mod sys {
 
     use windows_sys::Win32::Networking::WinSock::{
         closesocket, connect, ioctlsocket, recv, send, setsockopt, shutdown, WSAGetLastError,
-        WSAIoctl, WSASocketW, WSAStartup, AF_UNIX, FIONBIO, INVALID_SOCKET, SD_BOTH, SD_RECEIVE,
-        SD_SEND, SIO_AF_UNIX_GETPEERPID, SOCKADDR, SOCKADDR_UN, SOCKET, SOCKET_ERROR, SOCK_STREAM,
-        SOL_SOCKET, SO_RCVTIMEO, SO_SNDTIMEO, WSADATA, WSAEINVAL, WSAETIMEDOUT,
-        WSA_FLAG_NO_HANDLE_INHERIT, WSA_FLAG_OVERLAPPED,
+        WSAIoctl, WSAPoll, WSASocketW, WSAStartup, AF_UNIX, FIONBIO, INVALID_SOCKET, POLLRDNORM,
+        POLLWRNORM, SD_BOTH, SD_RECEIVE, SD_SEND, SIO_AF_UNIX_GETPEERPID, SOCKADDR, SOCKADDR_UN,
+        SOCKET, SOCKET_ERROR, SOCK_STREAM, SOL_SOCKET, SO_RCVTIMEO, SO_SNDTIMEO, WSADATA,
+        WSAEINVAL, WSAETIMEDOUT, WSAPOLLFD, WSA_FLAG_NO_HANDLE_INHERIT, WSA_FLAG_OVERLAPPED,
     };
 
     use super::{Direction, SocketError, SocketOperation, SocketTimeouts, MAX_SOCKET_PATH_BYTES};
@@ -827,6 +874,28 @@ mod sys {
                 operation: SocketOperation::Send,
                 code: WSAEINVAL,
             })
+        }
+
+        /// `WSAPoll` on this socket alone: whether `direction` is ready within `timeout`
+        /// (an end or an error counts as ready: the next call reports it).
+        pub(super) fn wait(&self, direction: Direction, timeout: Duration) -> Result<bool, SocketError> {
+            let events = match direction {
+                Direction::Receive => POLLRDNORM,
+                Direction::Send => POLLWRNORM,
+                Direction::Both => POLLRDNORM | POLLWRNORM,
+            };
+            let mut descriptor = WSAPOLLFD {
+                fd: self.0,
+                events,
+                revents: 0,
+            };
+            let milliseconds = i32::try_from(timeout.as_millis()).unwrap_or(i32::MAX);
+            // SAFETY: one live WSAPOLLFD for the call's duration, on the owned socket.
+            let ready = unsafe { WSAPoll(&mut descriptor, 1, milliseconds) };
+            if ready == SOCKET_ERROR {
+                return Err(last_error(SocketOperation::Wait));
+            }
+            Ok(ready > 0)
         }
 
         pub(super) fn shutdown(&self, direction: Direction) -> Result<(), SocketError> {

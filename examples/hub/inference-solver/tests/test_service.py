@@ -50,7 +50,11 @@ class Model(BaseHTTPRequestHandler):
         # A catalog entry says whether its server enforces a JSON reply format when the fixture
         # was told (server.json = {name: bool}); other entries say nothing, like a plain server.
         enforced = getattr(self.server, "json", {})
-        self.reply(200, {"data": [{"id": name, **({"capabilities": {"structuredOutput": enforced[name]}} if name in enforced else {})} for name in self.server.models]})
+        # Other fields of an entry, such as the context it serves, when the fixture was told
+        # (server.entries = {name: {field: value}}).
+        entries = getattr(self.server, "entries", {})
+        self.reply(200, {"data": [{"id": name, **({"capabilities": {"structuredOutput": enforced[name]}} if name in enforced else {}), **entries.get(name, {})}
+                                  for name in self.server.models]})
 
     def do_POST(self):
         if self.headers.get("Authorization") != "Bearer " + UPSTREAM_KEY:
@@ -65,6 +69,11 @@ class Model(BaseHTTPRequestHandler):
             return self.reply(500, {"error": UPSTREAM_KEY})
         if first == "refuse":
             return self.reply(400, {"error": {"message": "The prompt is longer than the context."}})
+        # A model server on a runtime that calls no tools (server.plain), like Yougori's Transformers
+        # runner: it refuses tools, earlier tool turns and a reply limit over 4,096 tokens.
+        if getattr(self.server, "plain", False) and ("tools" in data or "tool_choice" in data or data.get("max_tokens", 0) > 4096
+                                                     or any(m.get("role") == "tool" or "tool_calls" in m for m in data["messages"])):
+            return self.reply(400, {"error": {"message": "Agent tools require the GGUF runner"}})
         if first == "slow":
             time.sleep(0.05)
         usage = {"prompt_tokens": 3, "completion_tokens": 2}
@@ -91,12 +100,20 @@ class Model(BaseHTTPRequestHandler):
         self.reply(200, {"model": data["model"], "choices": [{"message": {"role": "assistant", "content": "hello"}}], "usage": usage, **extra})
 
 
+def checked(repo):
+    """A chat model Yougori runs, as model_check.check describes one, without asking Hugging Face."""
+    return {"model": repo, "kind": "text", "weights_gb": 1.0, "gpu_gb": 4, "disk_gb": 38, "compute": 8.0, "computers": True, "rent": True,
+            "summary": "Chat model · about 4 GB of GPU memory · Ampere (RTX 30, A100, A40) or newer", "notes": []}
+
+
 class Flow(unittest.TestCase):
     account_mode = "public"
 
     def setUp(self):
         self.temp = tempfile.TemporaryDirectory(prefix="inference-solver-test-")
         self.service = Service(self.temp.name, {"email": "admin@example.invalid", "password": PASSWORD}, account_mode=self.account_mode)
+        # Models added for computers are checked without asking Hugging Face (test_rentals checks the real check).
+        self.service.compute.check_model = checked
         self.web = Server(("127.0.0.1", 0), self.service)
         self.model = ThreadingHTTPServer(("127.0.0.1", 0), Model)
         self.model.models, self.model.calls, self.model.fail_catalog, self.model.lock = ["test/one", "test/two"], [], False, threading.Lock()
@@ -255,7 +272,7 @@ class Flow(unittest.TestCase):
         self.assertEqual(self.call("/api/models")[1], {"models": []})
         status, catalog, _ = self.call("/api/harnesses")
         self.assertEqual(status, 200)
-        self.assertEqual(len(catalog["harnesses"]), 21)
+        self.assertEqual(len(catalog["harnesses"]), 22)
         self.endpoint()
         status, catalog, _ = self.call("/api/models")
         self.assertEqual(status, 200)
@@ -408,9 +425,11 @@ class Flow(unittest.TestCase):
         self.assertEqual(self.call("/api/session")[1]["choices"], {"home": "models", "chosen": True})
         # Hidden harnesses stay listed for the CLI, unavailable with the reason, and cannot be set up.
         listed = {h["id"]: h for h in self.call("/api/harnesses")[1]["harnesses"]}
-        self.assertEqual(len(listed), 21)
+        self.assertEqual(len(listed), 22)
         self.assertEqual({name for name, h in listed.items() if h["offered"]}, {"pi", "codex"})
-        self.assertEqual((listed["aider"]["setup"]["available"], listed["aider"]["setup"]["reason"]), (False, NOT_OFFERED))
+        # Neither from its own image nor inside the Yougori harness.
+        for field in ("setup", "held"):
+            self.assertEqual((listed["aider"][field]["available"], listed["aider"][field]["reason"]), (False, NOT_OFFERED), field)
         for path in ("/api/harness-download/aider", "/install/aider.ps1", "/api/harness-image/aider"):
             code, body, _ = self.call(path)
             self.assertEqual((code, body["error"]["message"]), (404, NOT_OFFERED), path)
@@ -437,6 +456,51 @@ class Flow(unittest.TestCase):
         with patch.object(Model, "do_GET", lambda handler: (handler.send_response(302), handler.send_header("Location", "http://169.254.169.254/latest"), handler.end_headers())):
             with self.assertRaises(upstream.UpstreamError):
                 upstream.discover(self.model_url, UPSTREAM_KEY)
+
+
+class EmptyCatalog(unittest.TestCase):
+    """A model server that lists no models, as one whose model has not started yet. Its own class,
+    so the classes built on Flow do not run it again."""
+
+    def setUp(self):
+        self.flow = Flow()
+        self.flow.setUp()
+        self.addCleanup(self.flow.tearDown)
+
+    def overview(self):
+        return self.flow.call("/api/admin/overview", session=self.flow.admin)[1]["endpoints"]
+
+    def test_a_server_listing_no_models_is_told_apart_from_an_invalid_catalog(self):
+        flow, empty, invalid = self.flow, "The server lists no models right now.", "The server did not return a valid model catalog."
+        flow.model.models = []
+        with self.assertRaises(upstream.UpstreamError) as refused:
+            upstream.discover_catalog(flow.model_url, UPSTREAM_KEY)
+        self.assertEqual((str(refused.exception), refused.exception.status), (empty, 502))
+        # Connecting it in Admin says so, and connects nothing.
+        status, body, _ = flow.call("/api/admin/endpoints", {"name": "Test model", "url": flow.model_url, "key": UPSTREAM_KEY, "place": "local"}, flow.admin)
+        self.assertEqual((status, body["error"]["message"]), (502, empty))
+        self.assertEqual(self.overview(), [])
+        # A connected server whose model stops: Refresh catalog shows why beside it (app.js serverRows),
+        # and its models leave the catalog until it lists one again.
+        flow.model.models = ["test/one"]
+        flow.endpoint()
+        key = flow.key()["key"]
+        flow.model.models = []
+        self.assertEqual(flow.call("/api/admin/refresh", {}, flow.admin)[0], 200)
+        self.assertEqual([(e["state"], e["detail"]) for e in self.overview()], [("unavailable", empty)])
+        self.assertEqual(flow.call("/v1/models", key=key)[1]["data"], [])
+        flow.model.models = ["test/one"]
+        self.assertEqual(flow.call("/api/admin/refresh", {}, flow.admin)[0], 200)
+        self.assertEqual([e["state"] for e in self.overview()], ["ready"])
+        self.assertEqual([m["id"] for m in flow.call("/v1/models", key=key)[1]["data"]], ["test/one"])
+        # A catalog that is not one is still called invalid: more than 100 models, or a name with a space.
+        for models in ([f"test/{n}" for n in range(101)], ["test one"]):
+            flow.model.models = models
+            with self.subTest(models=len(models)), self.assertRaises(upstream.UpstreamError) as refused:
+                upstream.discover_catalog(flow.model_url, UPSTREAM_KEY)
+            self.assertEqual((str(refused.exception), refused.exception.status), (invalid, 502))
+            self.assertEqual(flow.call("/api/admin/refresh", {}, flow.admin)[0], 200)
+            self.assertEqual([(e["state"], e["detail"]) for e in self.overview()], [("unavailable", invalid)])
 
 
 if __name__ == "__main__":

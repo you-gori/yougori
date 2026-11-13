@@ -1,5 +1,7 @@
-FROM docker.io/library/node:22-bookworm-slim AS node
-FROM docker.io/library/python:3.12-slim-trixie
+# The pinned OS every harness image and the Yougori harness's images and packs share
+# (Containerfile.yougori uses the same digests and the same first instructions).
+FROM docker.io/library/node:22-bookworm-slim@sha256:5ec23b7c622b00547753bc6ffd78085dd868a68aeb41c8e0a1418f033e13d96d AS node
+FROM docker.io/library/python:3.12-slim-trixie@sha256:4840d514c583a4d3d8cad3940e68dee6f0f6f3635c12fcd0a3d74c21a5b93a54
 COPY --from=node /usr/local/bin/node /usr/local/bin/node
 COPY --from=node /usr/local/lib/node_modules/npm /usr/local/lib/node_modules/npm
 RUN ln -s /usr/local/lib/node_modules/npm/bin/npm-cli.js /usr/local/bin/npm \

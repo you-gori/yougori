@@ -1,0 +1,13 @@
+{
+  "harness": "shell",
+  "name": "Shell",
+  "category": "coding",
+  "protocol": "terminal",
+  "argv": ["bash", "--norc", "--noprofile", "-i"],
+  "env": { "PATH": "/usr/local/bin:/usr/bin:/bin", "HOME": "/tmp", "PS1": "shell$ " },
+  "cwd": "/tmp",
+  "model": "qwen3-coder-30b",
+  "models": ["qwen3-coder-30b", "gpt-oss-20b"],
+  "state_dir": "/tmp/yougori-harness-pane",
+  "reach": { "mode": "inference" }
+}

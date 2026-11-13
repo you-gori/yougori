@@ -45,6 +45,9 @@ pub enum StorageOperation {
     /// A record is in a format this build does not read, newer or unknown; it is kept
     /// untouched.
     Format,
+    /// The root's exclusive lock could not be taken for a reason other than another holder
+    /// (the file system refused the lock itself).
+    Lock,
 }
 
 /// A failed filesystem step; the path is relative to the catalog root.

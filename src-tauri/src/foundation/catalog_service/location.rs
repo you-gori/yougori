@@ -12,17 +12,25 @@ use std::path::PathBuf;
 use serde::Serialize;
 
 /// Why a configured catalog location cannot be used.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
 #[serde(tag = "problem", rename_all = "snake_case")]
 pub enum LocationProblem {
     /// The path is relative, so it would depend on the engine's working directory.
     NotAbsolute,
+    /// The installed engine's own catalog, which a disposable acceptance engine on the same
+    /// computer never opens (the engine glue decides which roots are the installed engine's).
+    InstalledEngine { root: PathBuf },
 }
 
 impl fmt::Display for LocationProblem {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::NotAbsolute => f.write_str("the catalog location is not an absolute path"),
+            Self::InstalledEngine { root } => write!(
+                f,
+                "the catalog location {} is the installed Yougori engine's catalog",
+                root.display()
+            ),
         }
     }
 }
@@ -73,6 +81,13 @@ impl CatalogLocation {
                  opened and nothing is imported into one. Set {setting} to the absolute path \
                  of a directory on a drive with room for imported artifacts; it is created \
                  if missing."
+            )),
+            Self::Invalid {
+                setting,
+                problem: problem @ LocationProblem::InstalledEngine { .. },
+            } => Some(format!(
+                "{problem}, which this disposable acceptance engine never opens, so no catalog \
+                 is opened. Set {setting} to the absolute path of a folder of this engine's own."
             )),
             Self::Invalid { setting, problem } => Some(format!(
                 "{problem}: {setting} must be the absolute path of the catalog directory; no \

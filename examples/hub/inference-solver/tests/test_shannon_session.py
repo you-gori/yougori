@@ -1,15 +1,21 @@
-"""Shannon's interactive lifecycle and quiet worker output, without a scan."""
+"""Shannon's interactive lifecycle and quiet worker output, without a scan, and the bash timeout of
+its pinned worker as the installer builds it."""
 import argparse
 import contextlib
+import hashlib
 import io
+import json
 import os
 from pathlib import Path
+import shutil
 import sys
 import tempfile
 import unittest
 from unittest.mock import patch
 
-sys.path.insert(0,str(Path(__file__).resolve().parents[1]/'site/harnesses'))
+HARNESSES = Path(__file__).resolve().parents[1]/'site/harnesses'
+sys.path.insert(0,str(HARNESSES))
+import install_shannon
 import shannon_cli
 
 
@@ -63,6 +69,128 @@ class Session(unittest.TestCase):
                 self.assertIn('internal taskToken',log.read_text())
                 self.assertNotIn('taskToken',output.getvalue())
                 self.assertIn('Model validated.' if not code else 'exit 3',output.getvalue())
+
+
+# Shannon's bash-timeout extension at the pinned commit (packages.json, shannon), byte for byte:
+# apps/worker/src/ai/extensions/bash-timeout/index.ts.
+PINNED_COMMIT = 'b9744f6cecc5429333873b86a6762f1d70c54fc2'
+PINNED_BASH_TIMEOUT = """/**
+ * pi extension: enforce a bounded timeout on every `bash` tool call.
+ *
+ * pi's built-in bash tool accepts an optional `timeout` (in seconds) but applies
+ * NO default and NO upper bound \u2014 an unbounded command (e.g. a `playwright-cli`
+ * browser action that never returns) hangs the agent indefinitely. This extension
+ * registers a `tool_call` pre-execution handler that blocks any `bash` invocation
+ * that omits `timeout` or sets it above the maximum, returning a message that tells
+ * the model how to re-run the command correctly.
+ */
+
+import type { ExtensionAPI, ToolCallEvent, ToolCallEventResult } from '@earendil-works/pi-coding-agent';
+import { isToolCallEventType } from '@earendil-works/pi-coding-agent';
+
+/** Recommended timeout (seconds) suggested to the model when it omits one. */
+const DEFAULT_TIMEOUT_SECONDS = 120;
+
+/** Hard upper bound (seconds) a single bash command may run. */
+const MAX_TIMEOUT_SECONDS = 600;
+
+function evaluateBashTimeout(timeout: number | undefined): ToolCallEventResult | undefined {
+  const hasValidTimeout = typeof timeout === 'number' && Number.isFinite(timeout) && timeout > 0;
+  if (!hasValidTimeout) {
+    return {
+      block: true,
+      reason: `A timeout in seconds is required for the bash tool. The bash tool was not executed. Use the default of ${DEFAULT_TIMEOUT_SECONDS} seconds, or up to a maximum of ${MAX_TIMEOUT_SECONDS} seconds.`,
+    };
+  }
+
+  if (timeout > MAX_TIMEOUT_SECONDS) {
+    return {
+      block: true,
+      reason: `bash 'timeout' ${timeout}s exceeds max ${MAX_TIMEOUT_SECONDS}s. Default ${DEFAULT_TIMEOUT_SECONDS}s, max ${MAX_TIMEOUT_SECONDS}s.`,
+    };
+  }
+
+  return undefined;
+}
+
+export default function bashTimeoutExtension(pi: ExtensionAPI): void {
+  pi.on('tool_call', (event: ToolCallEvent): ToolCallEventResult | undefined => {
+    if (!isToolCallEventType('bash', event)) {
+      return undefined;
+    }
+    return evaluateBashTimeout(event.input.timeout);
+  });
+}
+"""
+# Its handler once patched: a bash call without a timeout gets the default, then the same check.
+PATCHED_HANDLER = """  pi.on('tool_call', (event: ToolCallEvent): ToolCallEventResult | undefined => {
+    if (!isToolCallEventType('bash', event)) {
+      return undefined;
+    }
+    if (event.input.timeout == null) event.input.timeout = DEFAULT_TIMEOUT_SECONDS;
+    return evaluateBashTimeout(event.input.timeout);
+  });
+}
+"""
+
+
+class BashTimeout(unittest.TestCase):
+    """Round 2 with Gemma: Shannon refused all 31 bash calls of a pre-recon attempt (ls -F, each in
+    0-1 ms) because they gave no timeout, so nothing reached the practice app. The installer gives
+    such a call Shannon's own default instead."""
+
+    def source(self,text):
+        """A source tree holding `text` as the bash-timeout extension; its path."""
+        root=Path(tempfile.mkdtemp())
+        self.addCleanup(shutil.rmtree,root,ignore_errors=True)
+        path=root/install_shannon.BASH_TIMEOUT
+        path.parent.mkdir(parents=True)
+        path.write_bytes(text.encode('utf-8'))
+        return root,path
+
+    def test_the_patch_is_for_the_pinned_shannon(self):
+        self.assertEqual(json.loads((HARNESSES/'packages.json').read_text(encoding='utf-8'))['shannon']['commit'],PINNED_COMMIT,
+                         'A new Shannon pin: read its bash-timeout extension again, then update this copy and its hash.')
+        self.assertEqual(hashlib.sha256(PINNED_BASH_TIMEOUT.encode('utf-8')).hexdigest(),install_shannon.BASH_TIMEOUT_SHA256)
+
+    def test_a_bash_call_without_a_timeout_runs_with_shannons_default(self):
+        root,path=self.source(PINNED_BASH_TIMEOUT)
+        install_shannon.default_bash_timeout(root)
+        patched=path.read_bytes().decode('utf-8')
+        self.assertTrue(patched.endswith(PATCHED_HANDLER),patched)
+        # Only that line is new; the default is within Shannon's limit, above which it still refuses.
+        self.assertEqual(patched.replace(install_shannon.BASH_TIMEOUT_DEFAULT,'',1),PINNED_BASH_TIMEOUT)
+        for kept in ('const DEFAULT_TIMEOUT_SECONDS = 120;','const MAX_TIMEOUT_SECONDS = 600;','if (timeout > MAX_TIMEOUT_SECONDS) {'):
+            self.assertIn(kept,patched)
+
+    def test_an_extension_that_is_not_the_pinned_one_stops_the_build_as_it_is(self):
+        changed=PINNED_BASH_TIMEOUT.replace('const DEFAULT_TIMEOUT_SECONDS = 120;','const DEFAULT_TIMEOUT_SECONDS = 900;')
+        moved=PINNED_BASH_TIMEOUT.replace('    return evaluateBashTimeout(event.input.timeout);\n',
+                                          '    const verdict = evaluateBashTimeout(event.input.timeout);\n    return verdict;\n')
+        twice=PINNED_BASH_TIMEOUT.replace(install_shannon.BASH_TIMEOUT_CHECK,install_shannon.BASH_TIMEOUT_DEFAULT+install_shannon.BASH_TIMEOUT_CHECK)
+        for name,text in (('another default',changed),('another handler',moved),('patched already',twice)):
+            with self.subTest(name):
+                root,path=self.source(text)
+                with self.assertRaisesRegex(ValueError,'Pinned Shannon source changed'):
+                    install_shannon.default_bash_timeout(root)
+                self.assertEqual(path.read_bytes(),text.encode('utf-8'))
+
+    def test_the_build_patches_it_before_compiling_the_worker(self):
+        root,path=self.source(PINNED_BASH_TIMEOUT)
+        (root/'apps/worker/src/paths.ts').write_text("export const MODELS_CONFIG_PATH = '/app/models.json';\n",encoding='utf-8')
+        (root/'apps/worker/src/ai/models.ts').write_text('allowModelNetwork: true,\n',encoding='utf-8')
+        seen=[]
+
+        class Compiling(Exception):
+            pass
+
+        def run(argv,**options):
+            seen.append(path.read_bytes().decode('utf-8'))
+            raise Compiling
+        with patch.object(install_shannon.subprocess,'run',side_effect=run),self.assertRaises(Compiling):
+            install_shannon.build(root,{})
+        self.assertEqual(len(seen),1)
+        self.assertTrue(seen[0].endswith(PATCHED_HANDLER))
 
 
 if __name__=='__main__': unittest.main()

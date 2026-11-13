@@ -68,8 +68,8 @@ Public commands:
                                   Hub templates: whole setups as a folder; yougori template --help
   yougori tool new|check|add|list|remove|install|open|publish  Tools for sandboxes; yougori tool --help
   yougori inference connect URL   Choose compute to contribute and connect to an inference website
-  yougori inference run HARNESS --server URL     Prepare and start a harness in a Sandbox VM
-  yougori inference install HARNESS --server URL Prepare the harness image only
+  yougori inference run [HARNESS] --server URL    Choose a harness, a model and its setup; start it in a Sandbox VM
+  yougori inference install HARNESS --server URL  Prepare the images a run starts the harness from
   yougori grid contribute --server URL --join-file FILE --model-url URL --model MODEL
                                   Contribute an existing local model to a VM-hosted grid
   yougori import compose.yaml [--dry-run]
@@ -88,7 +88,7 @@ Public commands:
   yougori confidential --model OWNER/MODEL --provider NODE --policy LOCAL_POLICY.json
                                   Encrypt chat JSON from stdin using YOUGORI_NETWORK_API_KEY
   yougori login | logout | account  Network account shared with the desktop app
-  yougori model optimize ENV [--on|--off] [--pin|--unpin] [--idle SECONDS] [--parallel N] [--launch compiled|speculative|eager|megakernel] [--runner FOLDER|hf:OWNER/REPO@COMMIT] [--keep-outputs HOURS]
+  yougori model optimize ENV [--on|--off] [--pin|--unpin] [--idle SECONDS] [--parallel N] [--context TOKENS] [--launch compiled|speculative|eager|megakernel] [--runner FOLDER|hf:OWNER/REPO@COMMIT] [--keep-outputs HOURS]
   yougori model generate ENV --prompt TEXT [--negative TEXT] [--image FILE] [--size WxH] [--count N] [--steps N] [--guidance X] [--seconds N] [--fps N] [--seed N] [--voice NAME] [--format png|jpeg|webp] [--input FILE.json] [--output FOLDER] [--no-wait]
                                   A media model's job (image, video, sound or speech): waits for it and saves its files; --no-wait returns the job
   yougori model jobs ENV [JOB] [--cancel] [--save FOLDER] [--wait SECONDS]   Recent jobs; one job's state, its cancellation or its files saved
@@ -1267,7 +1267,7 @@ async fn model(args: &[String]) -> Result<Value, String> {
     if let Some(result)=crate::model_registry::handle(args).await? { return Ok(result); }
     let action = args.get(1).map(String::as_str).unwrap_or("");
     if action == "optimize" {
-        let target=args.get(2).ok_or("Usage: yougori model optimize ENV [--on|--off] [--pin|--unpin] [--idle SECONDS] [--parallel N] [--launch compiled|speculative|eager|megakernel] [--runner FOLDER|hf:OWNER/REPO@COMMIT] [--keep-outputs HOURS]")?;
+        let target=args.get(2).ok_or("Usage: yougori model optimize ENV [--on|--off] [--pin|--unpin] [--idle SECONDS] [--parallel N] [--context TOKENS] [--launch compiled|speculative|eager|megakernel] [--runner FOLDER|hf:OWNER/REPO@COMMIT] [--keep-outputs HOURS]")?;
         let mut params=json!({});
         let mut i=3;
         while i<args.len() {
@@ -1276,10 +1276,11 @@ async fn model(args: &[String]) -> Result<Value, String> {
                 "--pin"=>params["pinned"]=json!(true), "--unpin"=>params["pinned"]=json!(false),
                 "--idle"=>{params["idleTimeoutSeconds"]=json!(value(args,&mut i,"--idle")?.parse::<u64>().map_err(|_|"Idle seconds must be an integer")?);},
                 "--parallel"=>{params["parallel"]=json!(value(args,&mut i,"--parallel")?.parse::<u64>().map_err(|_|"Parallel requests must be an integer")?);},
+                "--context"=>{params["context"]=json!(value(args,&mut i,"--context")?.parse::<u64>().map_err(|_|"The context window is a number of tokens, for example 131072")?);},
                 "--launch"=>{params["launch"]=json!(value(args,&mut i,"--launch")?);},
                 "--runner"=>{params["runner"]=json!(runner_reference(&value(args,&mut i,"--runner")?)?);},
                 "--keep-outputs"=>{params["keepOutputsHours"]=json!(value(args,&mut i,"--keep-outputs")?.parse::<u64>().map_err(|_|"Hours must be an integer from 1 to 720")?);},
-                _=>return Err("Use --on, --off, --pin, --unpin, --idle SECONDS, --parallel N, --launch compiled|speculative|eager|megakernel, --runner FOLDER|hf:OWNER/REPO@COMMIT or --keep-outputs HOURS".into()),
+                _=>return Err("Use --on, --off, --pin, --unpin, --idle SECONDS, --parallel N, --context TOKENS, --launch compiled|speculative|eager|megakernel, --runner FOLDER|hf:OWNER/REPO@COMMIT or --keep-outputs HOURS".into()),
             }
             i+=1;
         }
@@ -2392,6 +2393,16 @@ mod tests {
         assert!(validate_model_neocloud(true, None, true).is_err());
         assert!(validate_model_neocloud(false, Some("pod"), false).is_err());
     }
+    /// `yougori inference install` prepares the Yougori base image and the harness's pack that
+    /// `run` starts it from (inference.rs, HELP), not an image of the harness's own; two spaces
+    /// part its usage from what it does, as `yougori help` paints them.
+    #[test]
+    fn inference_install_says_it_prepares_the_images_a_run_starts_from() {
+        let line = HELP.lines().find(|line| line.contains("yougori inference install")).expect("the public help names inference install");
+        let (usage, does) = line.trim_start().split_once("  ").expect("two spaces after the usage");
+        assert_eq!(usage, "yougori inference install HARNESS --server URL");
+        assert_eq!(does.trim_start(), "Prepare the images a run starts the harness from");
+    }
     #[test]
     fn workloads_are_named_after_what_they_run() {
         for (source, name) in [
@@ -2501,6 +2512,16 @@ mod tests {
         // The options are read before anything is asked of the engine.
         let calls = client::fake_engine::calls().len();
         assert!(model(&args(&["model", "optimize", "chat", "--fast"])).await.is_err());
+        assert_eq!(client::fake_engine::calls().len(), calls);
+        // A context window is sent as its number of tokens, beside parallel requests; the engine
+        // checks its range, and a word is refused here.
+        let window = model(&args(&["model", "optimize", "chat", "--context", "131072", "--parallel", "2"])).await.unwrap();
+        assert_eq!((window["context"].as_u64(), window["parallel"].as_u64()), (Some(131_072), Some(2)));
+        let calls = client::fake_engine::calls().len();
+        for bad in [&["--context"][..], &["--context", "lots"], &["--context", "-1"]] {
+            let refused = model(&args(&[&["model", "optimize", "chat"][..], bad].concat())).await.unwrap_err();
+            assert!(refused.contains("--context") || refused.contains("tokens"), "{refused}");
+        }
         assert_eq!(client::fake_engine::calls().len(), calls);
     }
     #[test]

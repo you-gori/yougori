@@ -14,8 +14,13 @@ try {
   await page.goto(url+'/#sandboxes');
   await page.getByText('4 CPU cores · 8 GB RAM',{exact:true}).waitFor();
   assert.equal(await page.locator('dialog[open]').count(),0);
-  const order=await page.locator('#nav a').evaluateAll(nodes=>nodes.map(n=>n.textContent));
-  assert.equal(order[order.indexOf('Models')+1],'Sandboxes');
+  // Harnesses, models and sandboxes share the main page, side by side, with no menu links of their own:
+  // Sandboxes comes right after Models, at the same height.
+  assert.equal(await page.locator('#nav a[href="#harnesses"], #nav a[href="#models"], #nav a[href="#sandboxes"]').count(),0);
+  assert.deepEqual(await page.locator('.overview > .column:not([hidden]) > .column-head h2').allTextContents(),['Harnesses','Models','Sandboxes']);
+  const modelsBox=await page.locator('#models-column').boundingBox(),sandboxesBox=await page.locator('#sandboxes-column').boundingBox();
+  assert.equal(sandboxesBox.y,modelsBox.y);
+  assert.ok(sandboxesBox.x>=modelsBox.x+modelsBox.width,'Sandboxes is beside Models, to its right');
   await page.getByRole('link',{name:'Sign in to create a sandbox',exact:true}).click();
   await page.getByLabel('Email',{exact:true}).fill('admin@example.invalid');await page.getByLabel('Password',{exact:true}).fill('disposable-test-password');
   await page.locator('#auth-submit').click();

@@ -88,9 +88,10 @@ class Router:
 
     @staticmethod
     def replicas(store, model):
-        """Every replica of a model name, ready or not, with the connection each one uses."""
+        """Every replica of a model name, ready or not, with the connection each one uses and what
+        it is doing while it cannot answer yet (detail: a computer still downloading the model)."""
         with store.db() as db:
-            rows = db.execute("SELECT m.id,m.upstream,e.id AS endpoint,e.name AS source,e.url,e.secret,e.state,e.checked,f.json,t.task "
+            rows = db.execute("SELECT m.id,m.upstream,e.id AS endpoint,e.name AS source,e.url,e.secret,e.state,e.checked,e.detail,f.json,t.task "
                               "FROM models m JOIN endpoints e ON e.id=m.endpoint_id LEFT JOIN model_features f ON f.id=m.id "
                               "LEFT JOIN model_tasks t ON t.id=m.id WHERE m.upstream=? ORDER BY m.id", (model,)).fetchall()
         return [dict(row) for row in rows]

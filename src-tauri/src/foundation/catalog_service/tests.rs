@@ -20,7 +20,7 @@ use crate::foundation::catalog::{
     ImportManifest, ImportRefusal, ImportRequest, ImportSource, ImportStage, ImportStart,
     ImportStatus, IntegrityFailure, ObjectBytes, ObjectId, ObjectMetadata, ObjectRole,
     ObjectStatus, Proceed, PublisherId, QuotaRefusal, Scope, SourceError, SourceIdentity,
-    TrustClaim, TrustRefusal, Uninterrupted, VerifierRejection,
+    TrustClaim, TrustRefusal, Uninterrupted, VerifierRejection, LOCK_FILE,
 };
 use crate::foundation::ids::{ExecutionId, ManualClock, MonotonicTime, OperationId, TenantId};
 use crate::foundation::signing::{
@@ -336,6 +336,42 @@ fn opening_creates_the_root_and_reports_a_clean_recovery() {
         }
     );
     assert!(!Path::new("relative-catalog").exists());
+}
+
+#[test]
+fn a_root_another_engine_holds_is_refused_in_use_and_left_alone() {
+    let fixture = Fixture::new();
+    let mut trust = fixture.trust(None);
+    let first = fixture.open(config(), Vec::new(), &mut trust);
+    let in_progress = fixture.root().join("records").join("in-progress.tmp");
+    fs::write(&in_progress, b"being written").unwrap();
+    let refused = CatalogService::open(
+        &fixture.root(),
+        config(),
+        Vec::new(),
+        &mut trust,
+        fixture.clock.clone(),
+        calendar(),
+        Mutex::new,
+    )
+    .unwrap_err();
+    let root = fixture.root().display().to_string();
+    assert_eq!(refused, OpenRefusal::InUse { root: root.clone() });
+    let message = refused.to_string();
+    assert!(
+        message.contains(&root) && message.contains(LOCK_FILE),
+        "{message}"
+    );
+    assert_eq!(
+        serde_json::to_value(&refused).unwrap(),
+        json!({ "refusal": "in_use", "root": root })
+    );
+    assert!(in_progress.exists(), "the holder's write in progress stays");
+    // Once the holder is gone, the next engine opens the root and recovers it.
+    drop(first);
+    let service = fixture.open(config(), Vec::new(), &mut trust);
+    assert_eq!(service.recovery().temporaries_removed, 1);
+    assert!(!in_progress.exists());
 }
 
 #[test]

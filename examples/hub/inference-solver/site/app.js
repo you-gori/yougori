@@ -8,6 +8,13 @@ const MAIN = ["harnesses", "models", "sandboxes"];
 const PAGES = [...MAIN, "contribute", "connect", "keys", "usage", "admin"];
 const home = () => session?.choices?.home || "harnesses";
 const offeredHarnesses = () => harnesses.filter(h => h.offered !== false);
+// The Yougori harness holds every other harness here. The main page lists it alone; its page lists
+// the harnesses inside it that the administrator offers, grouped as `yougori inference run` asks for
+// them (coding, then security), each with its own command.
+const YOUGORI = "yougori";
+const inside = () => offeredHarnesses().filter(h => h.id !== YOUGORI);
+const yougori = () => harnesses.find(h => h.id === YOUGORI) || {id: YOUGORI, name: "Yougori", description: "", interface: "Terminal", source: "https://yougori.com"};
+const startable = h => !!h.held?.available;
 // Until an administrator has chosen, the main pages show them the choice instead.
 const choosing = name => !!session?.user?.admin && !session.choices?.chosen && MAIN.includes(name);
 const esc = value => String(value ?? "").replace(/[&<>"']/g, c => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c]));
@@ -29,7 +36,7 @@ const SAMPLE_INPUTS = {"text-to-image": {prompt: "a red bicycle leaning on a whi
 const mediaPriced = m => m.media_price && (m.media_price.image_microusd || m.media_price.second_microusd);
 const mediaPrice = m => !mediaPriced(m) ? "Free" : [m.media_price.image_microusd ? dollars(m.media_price.image_microusd) + " per image" : "", m.media_price.second_microusd ? dollars(m.media_price.second_microusd) + " per second of output" : ""].filter(Boolean).join(" / ");
 const CATEGORIES = {};
-const STATES = {ready: "Available", stale: "Stale", unavailable: "Unavailable", checking: "Checking"};
+const STATES = {ready: "Available", loading: "Starting", stale: "Stale", unavailable: "Unavailable", checking: "Checking"};
 const PLACES = {local: "Local host", neocloud: "Rented cloud GPU", mixed: "Local hosts and rented cloud GPUs"};
 // A model is published once; each connected computer or model server serving it is a replica.
 const servedBy = m => m.replicas?.length ? `${m.replicas.length} ${m.replicas.length === 1 ? "server" : "servers"}` : "";
@@ -65,7 +72,7 @@ function paintNavigation() {
   $("#menu-signout").hidden = !signedIn;
   $("#account-email").textContent = session?.user?.email || (session?.mode === "public" ? "Public inference" : "Private inference");
   const gated = !signedIn && ["signin", "join", "connect", "keys", "usage", "admin"].includes(current);
-  const active = links.find(a => a.hash === "#" + (gated ? "signin" : current)) || links[0];
+  const active = links.find(a => a.hash === "#" + (gated ? "signin" : current));
   document.querySelectorAll('#nav a, #signin-link, #signup-link, #menu-links a').forEach(a => {
     if (a.hash === active?.hash) a.setAttribute("aria-current", "page");
     else a.removeAttribute("aria-current");
@@ -93,7 +100,7 @@ document.addEventListener("keydown", event => { if(event.key === "Escape" && $("
 document.addEventListener("click", event => { if (!$("#menu").contains(event.target)) closeMenu(); });
 document.addEventListener("keydown", event => {
   if (event.key !== "/" || event.ctrlKey || event.metaKey || event.altKey || $("#dialog").open || event.target.closest?.("input, textarea, select, [contenteditable]")) return;
-  const search = $("#catalog-search");
+  const search = $(".catalog .search-box input");
   if (search && !search.closest("[hidden]")) { event.preventDefault(); search.focus(); }
 });
 $("#menu-signout").addEventListener("click", () => $("#signout").click());
@@ -168,31 +175,30 @@ async function loadSession() {
   harnesses = catalog.harnesses; models = discovered.models;
   categories = catalog.categories || [];
   for (const category of categories) CATEGORIES[category.id] = category.label;
-  // The main page leads the menu and the site name links to it; Harnesses goes when none are offered.
-  const mains = MAIN.map(id => $(`#nav a[href="#${id}"]`));
-  $("#nav").prepend(...mains.filter(a => a.hash === "#" + home()), ...mains.filter(a => a.hash !== "#" + home()));
-  mains[0].hidden = !offeredHarnesses().length;
+  // The site name opens the main page.
   $("#brand").setAttribute("href", "#" + home());
   await route();
 }
 
-// Tools and models share one catalog: optional filters, search and sort above a list with one row per entry.
+// A catalog, as the models': optional filters, search and sort above a list with one row per entry.
 // Each row links to its own page. Search, sort and filter survive refreshes and navigation.
 // With `menu`, the filters become one dropdown of checkboxes and any number can be chosen; otherwise
-// they are pill buttons and one at a time can be chosen.
-function catalog({key, one, noun, items, filters = [], menu = null, sorts, text, row, grid = false, note = ""}) {
+// they are pill buttons and one at a time can be chosen. The dropdown takes focus itself (tabindex -1):
+// pressing a category's name would otherwise focus the page behind it and close the list before the
+// click ticks the box.
+function catalog({key, one, noun, items, filters = [], menu = null, sorts, text, row, grid = false, note = "", root = $("#view")}) {
   const state = catalogState[key] ||= {search: "", sort: sorts[0][0], filter: "", chosen: [], scroll: 0};
   const dot = f => `<i class="filter-dot" data-color="${esc(f.color || "")}" aria-hidden="true"></i>`;
   const picker = !filters.length ? "" : menu
-    ? `<div class="filter" id="${key}-filter"><button type="button" class="filter-button" id="${key}-filter-button" aria-expanded="false" aria-controls="${key}-filter-menu"><span class="filter-dots"></span><span class="filter-summary"></span><svg viewBox="0 0 12 12" aria-hidden="true"><path d="m3 4.5 3 3 3-3" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/></svg></button><div class="filter-menu" id="${key}-filter-menu" role="group" aria-label="${esc(menu.label)}" hidden>${filters.map(f => `<label class="filter-option" data-color="${esc(f.color || "")}"><input type="checkbox" value="${esc(f.id)}">${dot(f)}<span class="filter-name">${esc(f.label)}</span><span class="filter-count"></span></label>`).join("")}<button type="button" class="text-button filter-clear">Show all</button></div></div>`
+    ? `<div class="filter" id="${key}-filter"><button type="button" class="filter-button" id="${key}-filter-button" aria-expanded="false" aria-controls="${key}-filter-menu"><span class="filter-dots"></span><span class="filter-summary"></span><svg viewBox="0 0 12 12" aria-hidden="true"><path d="m3 4.5 3 3 3-3" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/></svg></button><div class="filter-menu" id="${key}-filter-menu" role="group" aria-label="${esc(menu.label)}" tabindex="-1" hidden>${filters.map(f => `<label class="filter-option" data-color="${esc(f.color || "")}"><input type="checkbox" value="${esc(f.id)}">${dot(f)}<span class="filter-name">${esc(f.label)}</span><span class="filter-count"></span></label>`).join("")}<button type="button" class="text-button filter-clear">Show all</button></div></div>`
     : `<div class="toggles" role="group" aria-label="Filter ${noun}">${filters.map(f => `<button type="button" class="toggle" data-filter="${f.id}" aria-pressed="false">${esc(f.label)} <span class="toggle-count"></span></button>`).join("")}</div>`;
-  $("#view").innerHTML = `<div class="catalog"><div class="toolbar">${picker}<div class="search-box"><svg viewBox="0 0 16 16" aria-hidden="true"><circle cx="7" cy="7" r="5" fill="none" stroke="currentColor" stroke-width="1.6"/><path d="m11 11 3.5 3.5" stroke="currentColor" stroke-width="1.6"/></svg><input type="search" id="catalog-search" aria-label="Search ${noun}" placeholder="Search ${noun}" autocomplete="off"><kbd aria-hidden="true">/</kbd></div><label class="sort">Sort<select id="catalog-sort" aria-label="Sort ${noun}">${sorts.map(([value, name]) => `<option value="${value}">${esc(name)}</option>`).join("")}</select></label></div><p class="count" id="catalog-count" aria-live="polite"></p><div class="${grid ? "entries grid" : "entries list"}" id="${key}-list"></div>${note}</div>`;
-  const search = $("#catalog-search"), sort = $("#catalog-sort"), list = $(`#${key}-list`), count = $("#catalog-count");
-  const toggles = [...document.querySelectorAll("#view [data-filter]")];
+  root.innerHTML = `<div class="catalog"><div class="toolbar">${picker}<div class="search-box"><svg viewBox="0 0 16 16" aria-hidden="true"><circle cx="7" cy="7" r="5" fill="none" stroke="currentColor" stroke-width="1.6"/><path d="m11 11 3.5 3.5" stroke="currentColor" stroke-width="1.6"/></svg><input type="search" id="${key}-search" aria-label="Search ${noun}" placeholder="Search ${noun}" autocomplete="off"><kbd aria-hidden="true">/</kbd></div><label class="sort">Sort<select id="${key}-sort" aria-label="Sort ${noun}">${sorts.map(([value, name]) => `<option value="${value}">${esc(name)}</option>`).join("")}</select></label></div><p class="count" id="${key}-count" aria-live="polite"></p><div class="${grid ? "entries grid" : "entries list"}" id="${key}-list"></div>${note}</div>`;
+  const search = $(`#${key}-search`), sort = $(`#${key}-sort`), list = $(`#${key}-list`), count = $(`#${key}-count`);
+  const toggles = [...root.querySelectorAll("[data-filter]")];
   const paint = root => root.querySelectorAll("[data-color]").forEach(node => {
     if (/^#[0-9a-f]{6}$/i.test(node.dataset.color)) node.style.setProperty("--category-blue", node.dataset.color);
   });
-  paint($("#view .toolbar"));
+  paint(root.querySelector(".toolbar"));
   const amount = n => `${n} ${n === 1 ? one : noun}`;
   search.value = state.search; sort.value = state.sort;
   const draw = () => {
@@ -255,60 +261,226 @@ function catalog({key, one, noun, items, filters = [], menu = null, sorts, text,
 const pageLink = (key, id) => `#${key}/${encodeURIComponent(id)}`;
 function missing(key, text) {
   const tools = key === "harnesses";
-  header("Not found", text, `<a class="secondary" href="#${key}">← ${tools ? "All tools" : "All models"}</a>`);
+  header("Not found", text, `<a class="secondary" href="#${key}">← ${tools ? "Main page" : "All models"}</a>`);
   $("#view").innerHTML = empty("Not found", text);
 }
-// Tools show as cards: the mark and state, the name and description, then the pinned version and the action.
-function harnessRow(h) {
-  const available = !!h.setup?.available;
-  const facts = [["Category", named(CATEGORIES, h.category)], ["Interface", h.interface], ["API format", named(PROTOCOLS, h.protocol)]];
-  return `<article class="entry"><div class="entry-head"><h3 class="entry-name"><a class="entry-open" href="${esc(pageLink("harnesses", h.id))}" data-harness="${esc(h.id)}">${esc(h.name)}</a></h3><span class="tag${available ? " ready" : ""}">${available ? "Ready" : "In preparation"}</span></div><p class="entry-text">${esc(h.description)}</p><dl class="entry-facts">${facts.map(([name, value]) => `<div><dt>${esc(name)}</dt><dd>${esc(value)}</dd></div>`).join("")}</dl><p class="entry-meta"><span>${available ? `Pinned <span class="mono">${esc(h.setup.version)}</span>` : "Setup not available yet"}</span><span class="entry-more" aria-hidden="true">${available ? "Install" : "Learn more"}</span></p></article>`;
+// The main page: harnesses, models and sandboxes side by side, the administrator's main page first.
+// Harnesses join when some are offered (Yougori, holding them); sandboxes when a computer offers them
+// or someone already has one. A column shorter than its neighbour stays in view beside it while it
+// fits the window.
+const COLUMNS = {harnesses: ["Harnesses", "Coding and security tools that run in Sandbox VMs."],
+  models: ["Models", "Models appear automatically when their connected server reports them."],
+  sandboxes: ["Sandboxes", "Choose an online computer. You can use only the CPU and RAM its owner contributes."]};
+function renderOverview() {
+  header("One API for every model", "Connect the tools you know to the models you control.", keysMenu());
+  bindKeysMenu();
+  const order = [home(), ...MAIN.filter(id => id !== home())];
+  const action = id => id === "models" && session.user?.admin ? '<button type="button" class="text-button" id="connect-model">Connect a model server →</button>' : "";
+  $("#view").innerHTML = `<div class="overview">${order.map(id => `<section class="column" id="${id}-column" aria-labelledby="${id}-heading"><div class="column-head"><div><h2 id="${id}-heading">${COLUMNS[id][0]}</h2><p class="hint">${esc(COLUMNS[id][1])}</p></div>${action(id)}</div><div class="column-body" id="${id}-body"></div></section>`).join("")}</div>`;
+  $("#connect-model")?.addEventListener("click", connectDialog);
+  renderHarnesses(); renderModels(); showSandboxes();
+  columnWatch?.disconnect();
+  columnWatch = new ResizeObserver(fitColumns);
+  document.querySelectorAll(".overview .column-body").forEach(list => columnWatch.observe(list));
+}
+let columnWatch = null;
+function fitColumns() {
+  const lists = [...document.querySelectorAll(".overview > .column:not([hidden]) > .column-body")];
+  const tallest = Math.max(0, ...lists.map(list => list.offsetHeight));
+  const side = matchMedia("(min-width: 901px)").matches;
+  for (const list of lists) list.classList.toggle("stuck", side && list.offsetHeight < tallest && list.offsetHeight + 120 < innerHeight);
+}
+addEventListener("resize", fitColumns);
+const counted = (n, one, many) => `${n} ${n === 1 ? one : many}`;
+// Harnesses by category, in the catalogue's order (Coding, then Cyber Coding), each in the website's
+// order, as `yougori inference run` lists them.
+function grouped(list) {
+  const ids = [...new Set([...categories.map(c => c.id), ...list.map(h => h.category)])];
+  return ids.map(id => [id, list.filter(h => h.category === id)]).filter(([, members]) => members.length);
+}
+// What a harness asks before it starts, besides the folder, what it can reach and its size: its own
+// questions in the catalogue, in a few words, first those that need an answer; nothing when it asks
+// none. A question that follows another's answer, such as a test login's password, goes with that
+// question.
+const ASKS = {target: "target", permission: "permission", off_limits: "what is off limits", depth: "how far it may go", login_user: "a test login", source: "source code", focus: "focus", issue: "the issue to fix"};
+const questionWords = q => Object.hasOwn(ASKS, q.id) ? ASKS[q.id] : String(q.question || q.id).replace(/\?+$/, "").replace(/^./, c => c.toLowerCase());
+function asks(h) {
+  const own = (h.questions || []).filter(q => !(q.when && Object.hasOwn(q.when, "present")));
+  const need = own.filter(q => q.required).map(questionWords), may = own.filter(q => !q.required).map(questionWords);
+  return [need.length ? `Asks for: ${need.join(", ")}.` : "", may.length ? `${need.length ? "Optional" : "Optional questions"}: ${may.join(", ")}.` : ""].filter(Boolean).join(" ");
+}
+// The question a folder on this computer answers, copied in as the VM's workspace: --workspace gives it,
+// and Yougori then asks for no other folder.
+const workspaceOf = h => (h.questions || []).find(q => q.workspace);
+// With --yes, `yougori inference run` asks nothing: each question takes the answer given or its default,
+// and one with neither stops the run, naming the option to add (cli/src/inference.rs, settle and
+// missing; a secret or a must-confirm never takes a default). These are the options a harness needs, as
+// HTML: a target can be the practice app inside the VM, which needs no permission, or an address, which
+// needs the permission yes. A question that follows another's answer counts unless it waits for an
+// answer --yes need not give; a target's permission goes with the target.
+function yesAnswers(h) {
+  const all = h.questions || [];
+  const applies = q => !q.when || (Object.hasOwn(q.when, "present") ? q.when.present === false : !all.some(p => p.id === q.when.id && p.type === "target"));
+  return all.filter(q => q.required && applies(q) && (q.must || q.type === "secret" || !q.default)).map(q => {
+    const id = esc(q.id);
+    if (q.type === "target") {
+      const yes = all.find(p => p.must && p.when?.id === q.id);
+      return `<code>--set ${id}=practice</code> (the practice app) or <code>--set ${id}=URL${yes ? ` --set ${esc(yes.id)}=yes` : ""}</code> (a target you may test)`;
+    }
+    if (q.workspace) return `<code>--workspace "C:\\path\\to\\project"</code> (${esc(questionWords(q))})`;
+    if (q.type === "secret") return `the <code>YOUGORI_SECRET_${esc(q.id.toUpperCase())}</code> environment variable (${esc(questionWords(q))})`;
+    const value = q.type === "confirm" ? "yes" : q.type === "folder" ? "PATH" : q.type === "choice" ? (q.choices || []).map(c => c.value).join("|") : '"..."';
+    return `<code>--set ${id}=${esc(value)}</code> (${esc(questionWords(q))})`;
+  });
+}
+// What every security harness does around its run, as `yougori inference run` asks and does it. Its VM
+// reaches only the target and this inference: the command does not ask what else it may reach, and it
+// refuses --sites, --targets and --internet sites or full (cli/src/inference.rs, resolve_reach).
+const SECURITY_NOTE = "Yougori asks whether you own the target or have written permission to test it: without a yes, nothing starts. The VM reaches only the target and this inference. Yougori does not offer other sites or the whole internet. For a safe first try, choose the practice app, a deliberately vulnerable app inside the VM. The report comes back to your folder after you review it.";
+// What Yougori asks a harness may use before its VM starts. A security harness's report comes back to
+// the folder copied in: the one Yougori asks for, or the source code's when it is given, as the folder
+// is then not asked. A security harness is not asked what its VM may reach; SECURITY_NOTE says what.
+const USES = "a project folder (copied in; changes come back only after your review), what it can reach (only this inference, sites you choose, or the whole internet as well), and CPU and memory";
+function uses(h, name) {
+  if (h.category !== "security") return `Before the VM starts, it asks what ${name} may use: ${USES}.`;
+  const source = workspaceOf(h);
+  if (source?.required) return `Before the VM starts, it asks what ${name} may use: CPU and memory. The ${esc(questionWords(source))} is copied in, and the report comes back to its folder only after your review.`;
+  return `Before the VM starts, it asks what ${name} may use: a folder for the report (copied in; the report comes back only after your review), and CPU and memory.${source ? ` If you give the ${esc(questionWords(source))}, the report comes back to its folder instead.` : ""}`;
+}
+const NO_MODELS = '<p class="error">No models are ready. The administrator must connect a model before you can use this harness.</p>';
+// Under Requirements and source on Yougori's page, which holds both kinds of harness. Yougori asks what a
+// coding harness's VM may reach (USES); it never asks for a security harness (SECURITY_NOTE). A coding
+// harness's own page has REQUIREMENTS_CODING, a security harness's REQUIREMENTS_SECURITY.
+const REQUIREMENTS = "Yougori manages the private runtime on Windows. A coding harness reaches only this server unless you choose more: when you start it, Yougori asks whether it may also reach sites you choose or the whole internet. A security harness reaches only its target and this server, and Yougori does not ask. Linux source requires Python and a supported Yougori VM backend. macOS is not supported yet.";
+// On a coding harness's page, beside its source setup: only what its own VM reaches.
+const REQUIREMENTS_CODING = "Yougori manages the private runtime on Windows. The VM reaches only this server unless you choose more: when you start it, Yougori asks whether it may also reach sites you choose or the whole internet. Linux source requires Python and a supported Yougori VM backend. macOS is not supported yet.";
+// On a security harness's page, beside its source setup. Its VM reaches only the target and this server,
+// and nothing asks about it: the Yougori command holds it there (cli/src/inference.rs, resolve_reach), and
+// so does the source setup, which refuses --sites and --internet sites or full (solver.py, held_to_target).
+const REQUIREMENTS_SECURITY = "Yougori manages the private runtime on Windows. The VM reaches only the target and this server. Linux source requires Python and a supported Yougori VM backend. macOS is not supported yet.";
+// The Harnesses column lists Yougori alone, as a card: its name and state, the description, then
+// how many harnesses it holds.
+function yougoriRow(held) {
+  const y = yougori(), any = startable(y) || held.some(startable);
+  const holds = [`${counted(held.length, "harness", "harnesses")} inside`, ...grouped(held).map(([id, members]) => `${members.length} ${named(CATEGORIES, id)}`)].join(" · ");
+  return `<article class="entry"><div class="entry-head"><h3 class="entry-name"><a class="entry-open" href="${esc(pageLink("harnesses", y.id))}" data-harness="${esc(y.id)}">${esc(y.name)}</a></h3><span class="tag${any ? " ready" : ""}">${any ? "Ready" : "In preparation"}</span></div><p class="entry-text">${esc(y.description)}</p><p class="entry-meta">${esc(holds)}</p></article>`;
 }
 function renderHarnesses() {
-  header("Tools for your models", "Connect the tools you know to the models you control.");
-  const offered = offeredHarnesses();
-  catalog({key: "harnesses", one: "tool", noun: "tools", items: () => offered, grid: true,
-    filters: categories.filter(c => offered.some(h => h.category === c.id)).map(c => ({id: c.id, label: c.label, color: c.color, test: h => h.category === c.id})),
-    menu: {label: "Category", all: "All categories"},
-    sorts: [
-      ["ready", "Ready first", (a, b) => Number(!!b.setup?.available) - Number(!!a.setup?.available)],
-      ["name", "Name A–Z", byName(h => h.name)],
-      ["name-desc", "Name Z–A", (a, b) => byName(h => h.name)(b, a)],
-    ],
-    text: h => [h.name, h.description, h.interface, h.category].join(" "),
-    row: harnessRow,
-    note: '<p class="hint catalog-note">Blue terminals. Your models. Isolated setups connect only to this server; browsing, external APIs, and package downloads are blocked while a tool runs.</p>',
-  });
+  const held = inside();
+  $("#harnesses-column").hidden = !held.length;
+  if (!held.length) return;
+  // A coding harness is asked whether its VM may reach more; a security harness never is.
+  $("#harnesses-body").innerHTML = `<div class="entries list" id="harnesses-list">${yougoriRow(held)}</div><p class="hint catalog-note">Blue terminals. Your models. Each harness runs in an isolated Sandbox VM. A coding harness reaches only this server unless you choose more. A security harness reaches only its target and this server.</p>`;
   $("#harnesses-list").addEventListener("click", event => {
     const card = event.target.closest("[data-harness]");
-    if(card) { event.preventDefault(); renderHarness(card.dataset.harness); }
+    // Ctrl, Shift or Cmd opens Yougori's own address in a new tab or window, as any link does.
+    if(!card || event.ctrlKey || event.metaKey || event.shiftKey || event.altKey) return;
+    event.preventDefault();
+    // Yougori has its own address, so the browser's Back returns to the main page, at its card.
+    places.main = {scroll: scrollY, id: card.dataset.harness}; delete places.yougori;
+    location.hash = pageLink("harnesses", card.dataset.harness);
+    history.replaceState({fromList: true}, "");
   });
 }
+// Where a page was left for one of its entries (the main page for Yougori, Yougori's page for a
+// harness inside it), so that the browser's Back, or the page's own back button, returns to the same
+// place with that entry focused. A place without a scroll position, as when a harness's page opened
+// from a shared link goes back to Yougori, brings the entry into view.
+const places = {};
+function restore(key, selector) {
+  const place = places[key]; delete places[key];
+  if(!place) return;
+  const target = document.querySelector(selector(CSS.escape(place.id)));
+  if(place.scroll === null) target?.scrollIntoView({block: "center"}); else scrollTo(0, place.scroll);
+  target?.focus({preventScroll: true});
+}
+// Install and start, as on every harness page: install or update Yougori, run the command, approve the
+// code. The harnesses inside Yougori need a Yougori whose CLI knows them: an older one says Unknown
+// harness, or starts a harness without its questions. `asked` is HTML saying what the command asks, its
+// names already escaped.
+function installSteps(runs, asked, starts, command) {
+  return `<ol class="setup-steps install-steps"><li><strong>Install Yougori.</strong> ${esc(runs)} runs in a Yougori Sandbox VM on your computer. <a class="text-button" id="get-yougori" href="https://yougori.com/#download" target="_blank" rel="noopener noreferrer">Download Yougori ↗</a> Already installed? Update it with <code>yougori update</code>, then go to step 2.</li><li><strong>Run this command</strong> in a new terminal. ${asked} <strong>${esc(starts)} starts automatically after installation.</strong> Keep the terminal open.<pre class="code" id="guide-code">${esc(command)}</pre><button class="primary" id="guide-copy" data-copy="${esc(command)}">Copy install command</button><p class="hint" id="not-recognized">If the terminal says <code>yougori</code> is not recognized, do step 1, then open a new terminal. If it says Unknown harness, update Yougori with <code>yougori update</code>.</p></li><li><strong>Approve the code.</strong> On first use, before it lists the models, the terminal shows a link and a code: sign in here, enter the code and approve. The terminal then continues by itself. <a class="text-button" href="#connect" id="setup-account">Enter your connection code →</a></li></ol>`;
+}
+function againPanel(command, hint) {
+  return panel("Open it again", `<p>Run the same Yougori command next time:</p><div class="install-command"><pre class="code" id="launch-code">${esc(command)}</pre><button class="secondary" data-copy="${esc(command)}">Copy start command</button></div><p class="hint" id="again-hint">${hint}</p>`);
+}
+// The end of the Open it again hint, as the harness pages have it.
+const AGAIN_END = "The VM works on a copy; review and promote changes in Yougori. It runs until you exit or stop it.";
+// A harness inside Yougori, in one row: its name (a link to its own page), its line, its state and Copy
+// command, which copies its own command (the list of harnesses then starts on it), then what it asks,
+// when it asks anything. One not ready yet says why instead of offering a command.
+function insideRow(h) {
+  const available = startable(h), questions = asks(h);
+  const meta = available ? questions : h.held?.reason || "This tool needs an isolated launch adapter before it can be used here.";
+  return `<article class="entry" id="inside-${esc(h.id)}"><div class="entry-head"><h3 class="entry-name"><a class="text-button" href="${esc(pageLink("harnesses", h.id))}" data-inside="${esc(h.id)}">${esc(h.name)}</a></h3><p class="entry-text">${esc(h.description)}</p><span class="tag${available ? " ready" : ""}">${available ? "Ready" : "In preparation"}</span>${available
+    ? `<button type="button" class="text-button entry-action" data-copy="${esc(installCommand(h.id))}" aria-label="Copy command for ${esc(h.name)}">Copy command</button>` : ""}</div>${meta ? `<p class="entry-meta">${esc(meta)}</p>` : ""}</article>`;
+}
+// Yougori's page: install and start with its command, then the harnesses inside it, one row each. Only
+// offered harnesses appear, in the groups and order the command lists them.
+function renderYougori() {
+  const y = yougori(), held = inside();
+  if (!held.length) return missing("harnesses", "This tool is not offered on this inference.");
+  const own = y.offered !== false && startable(y), any = own || held.some(startable), command = installCommand(y.id), groups = grouped(held);
+  const main = any
+    ? panel("Install and start", installSteps("The harness you choose", `Yougori asks which harness, ${own ? "its own agent or one of the ready ones below" : "from the ready ones below"}, then which model, then that harness's own questions. Before the VM starts, it asks what a coding harness may use: ${USES}. A security harness is not asked what it can reach: it reaches only its target and this inference.`, "The harness", command) + `<p class="hint">No API key to create or copy.</p>${models.some(ready) ? "" : NO_MODELS}`)
+      + againPanel(command, `Yougori asks its questions again each time. Each harness's Copy command below copies its own command, which starts the list on that harness. To ask nothing, add <code>--yes</code> to it, with <code>--model ID</code> when there is more than one model and the answers its page names. Add <code>--workspace "C:\\path\\to\\project"</code> to name the project folder. ${AGAIN_END}`)
+      + `<details class="install-details"><summary>Requirements and source</summary><p class="hint">${esc(REQUIREMENTS)} Each harness's page, linked from its name below, has its source setup.</p></details>`
+    : panel("In preparation", `<div class="small-banner">No harness here is ready yet. Each one says why below.</div><p class="hint">There is no unrestricted fallback. A harness becomes available when it can run inside the same server-only boundary.</p>`);
+  const inner = groups.map(([id, members]) => `<div id="group-${esc(id)}">${panel(named(CATEGORIES, id), (id === "security" ? `<p class="hint">${esc(SECURITY_NOTE)}</p>` : "") + `<div class="entries list inside">${members.map(insideRow).join("")}</div>`, `<span class="hint">${esc(counted(members.length, "harness", "harnesses"))}</span>`)}</div>`).join("");
+  const about = facts([["Status", any ? "Ready to install" : "In preparation"], ...groups.map(([id, members]) => [named(CATEGORIES, id), counted(members.length, "harness", "harnesses")]), ["Interface", y.interface], ["Connected server", location.host]])
+    + (any ? `<div class="small-banner">Blue terminal, connected to ${esc(location.host)}. A coding harness reaches only this inference unless you choose more. A security harness reaches only its target and this inference.</div>` : "")
+    + (y.source ? `<a class="text-button" href="${esc(y.source)}" target="_blank" rel="noopener noreferrer">Official project ↗</a>` : "");
+  header(y.name, y.description, '<button type="button" class="secondary" id="close-installation">← Main page</button>');
+  $("#view").innerHTML = `<div class="detail"><section class="detail-main harness-install" id="harness-install-inline">${main}${inner}</section><div class="detail-side">${panel("About", about)}</div></div>`;
+  // The same step as the browser's Back when the main page opened Yougori; a shared link opens the
+  // main page at its top.
+  $("#close-installation").addEventListener("click", () => {
+    if(history.state?.fromList) { history.back(); return; }
+    delete places.main; location.hash = "harnesses";
+  });
+  // Each harness inside has its own page and address, so the browser's Back returns here, at its name.
+  $("#harness-install-inline").addEventListener("click", event => {
+    const link = event.target.closest("[data-inside]");
+    if(!link || event.ctrlKey || event.metaKey || event.shiftKey || event.altKey) return;
+    event.preventDefault();
+    places.yougori = {scroll: scrollY, id: link.dataset.inside};
+    location.hash = pageLink("harnesses", link.dataset.inside);
+    history.replaceState({fromYougori: true}, "");
+  });
+  bindCopies($("#view"));
+  restore("yougori", id => `[data-inside="${id}"]`);
+}
+// A harness's own page, which old links to it still open: as a model's, the steps beside the facts.
+// Its command starts Yougori's list of harnesses on this one.
 function renderHarness(id) {
-  const h = offeredHarnesses().find(h => h.id === id);
+  if (id === YOUGORI) return renderYougori();
+  const h = inside().find(h => h.id === id);
   if (!h) return missing("harnesses", "This tool is not offered on this inference.");
-  const available = !!h.setup?.available, listed = models.filter(ready).length;
+  const available = startable(h), security = h.category === "security";
   let main;
   if (available) {
-    const install = installCommand(h.id);
-    main = panel("Install and start", `<ol class="setup-steps install-steps"><li><strong>Install Yougori.</strong> ${esc(h.name)} runs in a Yougori Sandbox VM on your computer. <a class="text-button" id="get-yougori" href="https://yougori.com/#download" target="_blank" rel="noopener noreferrer">Download Yougori ↗</a> Already installed? Go to step 2.</li><li><strong>Run this command</strong> in a new terminal. Before the VM starts, Yougori asks what ${esc(h.name)} may use: a project folder (copied in; changes come back only after your review), what it can reach (only this inference, sites you choose, or the whole internet as well), and CPU and memory. <strong>${esc(h.name)} starts automatically after installation.</strong> Keep the terminal open.<pre class="code" id="guide-code">${esc(install)}</pre><button class="primary" id="guide-copy" data-copy="${esc(install)}">Copy install command</button><p class="hint" id="not-recognized">If the terminal says <code>yougori</code> is not recognized, do step 1, then open a new terminal.</p></li><li><strong>Approve the code.</strong> On first use the terminal shows a link and a code: sign in here, enter the code and approve. The terminal then continues by itself. <a class="text-button" href="#connect" id="setup-account">Enter your connection code →</a></li></ol><p class="hint">No API key to create or copy.${h.id==='shannon'?' Shannon opens its command prompt. Type check to verify the model connection, help for commands, or exit to close it.':''}</p>${listed?'':'<p class="error">No models are ready. The administrator must connect a model before you can use this harness.</p>'}`)
-      + panel("Open it again", `<p>Run the same Yougori command next time:</p><div class="install-command"><pre class="code" id="launch-code">${esc(install)}</pre><button class="secondary" data-copy="${esc(install)}">Copy start command</button></div><p class="hint">Yougori asks its questions again each time: add <code>--yes</code> to keep the defaults, or <code>--workspace "C:\\path\\to\\project"</code> to name the project folder. The VM works on a copy; review and promote changes in Yougori. It runs until you exit or stop it.</p>`)
-        + `<details class="install-details"><summary>Requirements and source</summary><p class="hint">Yougori manages the private runtime on Windows. By default the VM reaches only this server; when you start it, Yougori asks whether it may also reach sites you choose or the whole internet. Linux source requires Python and a supported Yougori VM backend. macOS is not supported yet.</p><a class="text-button" id="harness-download" href="/api/harness-download/${encodeURIComponent(h.id)}" download>Download source setup ↓</a></details>`;
+    const install = installCommand(h.id), name = esc(h.name), needs = yesAnswers(h), source = workspaceOf(h);
+    // --workspace answers the folder question, unless --yes already needs it.
+    const folder = source?.required ? "" : ` Add <code>--workspace "C:\\path\\to\\project"</code> ${source ? `for the ${esc(questionWords(source))}` : security ? "to name the folder for the report" : "to name the project folder"}.`;
+    main = panel("Install and start", installSteps(h.name, `Yougori asks which harness, with ${name} already selected, then which model${h.questions?.length ? `, then ${name}'s own ${h.questions.length === 1 ? "question" : "questions"}` : ""}. ${uses(h, name)}`, h.name, install) + `<p class="hint">No API key to create or copy.${h.id==='shannon'?' Shannon opens its command prompt. Type check to verify the model connection, help for commands, or exit to close it.':''}</p>${security ? `<p class="hint">${esc(SECURITY_NOTE)}</p>` : ""}${models.some(ready) ? "" : NO_MODELS}`)
+      + againPanel(install, `Yougori asks its questions again each time. To ask nothing, add <code>--yes</code> to keep the defaults, with <code>--model ID</code> when there is more than one model${needs.length ? `, and ${name}'s own ${needs.length === 1 ? "answer" : "answers"}: ${needs.join(", and ")}` : ""}.${folder} ${AGAIN_END}`)
+        + `<details class="install-details"><summary>Requirements and source</summary><p class="hint">${esc(security ? REQUIREMENTS_SECURITY : REQUIREMENTS_CODING)}</p><a class="text-button" id="harness-download" href="/api/harness-download/${encodeURIComponent(h.id)}" download>Download source setup ↓</a></details>`;
   } else {
-    main = panel("In preparation", `<div class="small-banner">${esc(h.setup?.reason || "This tool needs an isolated launch adapter before it can be used here.")}</div><p class="hint">There is no unrestricted fallback. This setup will become available when it can run inside the same server-only boundary.</p>`);
+    main = panel("In preparation", `<div class="small-banner">${esc(h.held?.reason || "This tool needs an isolated launch adapter before it can be used here.")}</div><p class="hint">There is no unrestricted fallback. This setup will become available when it can run inside the same server-only boundary.</p>`);
   }
-  const about = facts([["Status", available ? "Ready to install" : "In preparation"], ["Category", named(CATEGORIES, h.category)], ["Interface", h.interface], ["API format", named(PROTOCOLS, h.protocol)], ["Pinned version", h.setup?.version], ["Connected server", location.host]])
-    + (available ? `<div class="small-banner">Blue terminal, connected to ${esc(location.host)}. External runtime network access is blocked.</div>` : "")
+  const size = h.size?.cpu && h.size?.memory ? `${counted(h.size.cpu, "CPU core", "CPU cores")}, ${h.size.memory} GB memory` : "";
+  const about = facts([["Status", available ? "Ready to install" : "In preparation"], ["Category", named(CATEGORIES, h.category)], ["Interface", h.interface], ["API format", named(PROTOCOLS, h.protocol)], ["Questions", asks(h) || "No questions of its own."], ["Default VM size", size], ["Pinned version", h.held?.version], ["Connected server", location.host]])
+    + (available ? `<div class="small-banner">Blue terminal, connected to ${esc(location.host)}. The VM reaches only ${security ? "the target and this inference." : "this inference unless you choose more."}</div>` : "")
     + `<a class="text-button" href="${esc(h.source)}" target="_blank" rel="noopener noreferrer">Official project ↗</a>`;
-  $("#harness-install-inline")?.remove();
-  const installation = document.createElement("section");
-  installation.id = "harness-install-inline";
-  installation.className = "stack harness-install";
-  installation.innerHTML = `<div class="install-heading"><div><h2>${esc(h.name)}</h2><p>${esc(h.description)}</p></div><button type="button" class="text-button" id="close-installation">Close</button></div>${main}<details class="install-details"><summary>About ${esc(h.name)}</summary>${about}</details>`;
-  $("#view").append(installation);
-  $("#close-installation").addEventListener("click", () => installation.remove());
-  bindCopies(installation);
-  installation.scrollIntoView({block: "start"});
+  header(h.name, h.description, '<button type="button" class="secondary" id="close-installation">← Yougori</button>');
+  $("#view").innerHTML = `<div class="detail"><section class="detail-main harness-install" id="harness-install-inline">${main}</section><div class="detail-side">${panel("About", about)}</div></div>`;
+  // The same step as the browser's Back when Yougori's page opened this harness; a shared link opens
+  // Yougori's page with this harness in view.
+  $("#close-installation").addEventListener("click", () => {
+    if(history.state?.fromYougori) { history.back(); return; }
+    places.yougori = {scroll: null, id: h.id}; location.hash = pageLink("harnesses", YOUGORI);
+  });
+  bindCopies($("#view"));
 }
 
 function renderDeviceConnect() {
@@ -334,14 +506,12 @@ function modelRow(m) {
   return `<article class="entry"><div class="entry-head"><h3 class="entry-name"><a class="entry-open" href="${esc(pageLink("models", m.id))}" data-model="${esc(m.id)}">${esc(friendly(m))}</a></h3><span class="tag${ready(m) ? " ready" : ""}">${esc(named(STATES, m.state))}</span><button type="button" class="text-button entry-action" data-copy="${esc(m.id)}" aria-label="Copy model ID ${esc(m.id)}">Copy ID</button></div><p class="entry-text mono">${esc(m.upstream)}</p><p class="entry-meta">${meta}</p></article>`;
 }
 function renderModels() {
-  header("One API for every model", "Models appear automatically when their connected server reports them.", session.user?.admin ? '<button class="primary" id="connect-model">Connect a model server ↗</button>' : "");
-  $("#connect-model")?.addEventListener("click",connectDialog);
   redrawModels = null;
   if (!models.length) {
-    $("#view").innerHTML = empty("Your first model starts here.",session.user?.admin ? "Connect an existing Yougori, vLLM, or llama.cpp model server. Its models will appear here without renting hardware or downloading weights again." : "Your administrator has not connected a model server yet.");
+    $("#models-body").innerHTML = empty("Your first model starts here.",session.user?.admin ? "Connect an existing Yougori, vLLM, or llama.cpp model server. Its models will appear here without renting hardware or downloading weights again." : "Your administrator has not connected a model server yet.");
     return;
   }
-  redrawModels = catalog({key: "models", one: "model", noun: "models", items: () => models,
+  redrawModels = catalog({key: "models", one: "model", noun: "models", items: () => models, root: $("#models-body"),
     filters: [
       {id: "censored", label: "Censored", test: m => m.censorship !== "uncensored"},
       {id: "uncensored", label: "Uncensored", test: m => m.censorship === "uncensored"},
@@ -367,7 +537,7 @@ function renderModel(id) {
   const priced = m.price?.input_microusd_per_million || m.price?.output_microusd_per_million;
   const cachedPrice = priced && m.price.cached_microusd_per_million !== m.price.input_microusd_per_million ? " / " + dollars(m.price.cached_microusd_per_million) + " cached input" : "";
   const replicas = (m.replicas || []).map(r => `${r.name} (${named(STATES, r.state)})`).join(", ");
-  const about = facts([["Model ID", m.id], ["Kind", isMedia(m) ? named(TASKS, m.task) + ": asynchronous jobs" + (m.protocols.includes("images") ? ", and OpenAI's images endpoint" : m.protocols.includes("speech") ? ", and OpenAI's speech endpoint" : m.protocols.includes("videos") ? ", and OpenAI's videos endpoint" : "") : ""], ["Price", isMedia(m) ? mediaPrice(m) : priced ? dollars(m.price.input_microusd_per_million) + " input" + cachedPrice + " / " + dollars(m.price.output_microusd_per_million) + " output per 1M tokens" : "Free"], ["Status", named(STATES, m.state)], ["JSON output", m.features?.json ? "Enforced by the server: send response_format with a json_schema" : m.features?.json === false ? "Not enforced by its servers" : ""], ["Cache · 24 hours", cacheHits(m) ? cacheHits(m) + ", " + m.cache.requests + " requests" : ""], ["Content", isMedia(m) ? "" : `${named(CENSORSHIP, m.censorship)}, ${labelled ? "set by the administrator" : "detected from the name"}`], ["Served by", replicas], ["Runs on", m.place && named(PLACES, m.place)], ["Last checked", m.checked && nowLabel(m.checked)]]);
+  const about = facts([["Model ID", m.id], ["Kind", isMedia(m) ? named(TASKS, m.task) + ": asynchronous jobs" + (m.protocols.includes("images") ? ", and OpenAI's images endpoint" : m.protocols.includes("speech") ? ", and OpenAI's speech endpoint" : m.protocols.includes("videos") ? ", and OpenAI's videos endpoint" : "") : ""], ["Price", isMedia(m) ? mediaPrice(m) : priced ? dollars(m.price.input_microusd_per_million) + " input" + cachedPrice + " / " + dollars(m.price.output_microusd_per_million) + " output per 1M tokens" : "Free"], ["Status", named(STATES, m.state) + (m.state === "loading" && m.detail ? " · " + m.detail : "")], ["JSON output", m.features?.json ? "Enforced by the server: send response_format with a json_schema" : m.features?.json === false ? "Not enforced by its servers" : ""], ["Cache · 24 hours", cacheHits(m) ? cacheHits(m) + ", " + m.cache.requests + " requests" : ""], ["Content", isMedia(m) ? "" : `${named(CENSORSHIP, m.censorship)}, ${labelled ? "set by the administrator" : "detected from the name"}`], ["Served by", replicas], ["Runs on", m.place && named(PLACES, m.place)], ["Last checked", m.checked && nowLabel(m.checked)]]);
   const label = session.user?.admin && !isMedia(m) ? panel("Content label", `<form id="censorship-form" class="stack"><p class="hint">Automatic marks a model uncensored when its name says so, for example “uncensored” or “abliterated”.</p><label>Label<select name="censorship"><option value="automatic">Automatic, from the name</option><option value="censored">Censored</option><option value="uncensored">Uncensored</option></select></label><p class="error" role="alert"></p><div><button class="primary" type="submit">Save label ↗</button></div></form>`) : "";
   const keys = session.user ? '<a class="text-button" href="#keys">Create a personal API key</a>' : '<a class="text-button" href="#signin">Sign in to create a personal API key</a>';
   const tryIt = isMedia(m) && session.user ? tryPanel(m) : isMedia(m) ? panel("Try it", `<p class="hint"><a class="text-button" href="#signin">Sign in</a> to generate with this model from this page.</p>`) : "";
@@ -422,28 +592,74 @@ function showTryOutput(job) {
     out.append(node, link);
   }
 }
-async function renderKeys(generation) {
-  const result = await api("/api/keys"); if(generation !== viewGeneration) return;
-  header("API keys", "Create individual keys for your tools. Keys are shown once and can be revoked at any time.", '<button class="primary" id="new-key">Create API key ↗</button>');
-  $("#new-key").addEventListener("click",keyDialog);
-  $("#view").innerHTML = result.keys.length ? `<div class="table-wrap"><table><thead><tr><th>Name</th><th>Models</th><th>Created</th><th>Status</th><th></th></tr></thead><tbody>${result.keys.map(k=>`<tr><td>${esc(k.label)}</td><td>${esc(k.scopes.includes("*")?"All current and future models":k.scopes.length+" selected")}</td><td>${esc(nowLabel(k.created))}</td><td>${k.revoked?"Revoked":"Active"}</td><td>${k.revoked?"":`<button class="text-button" data-revoke="${esc(k.id)}">Revoke</button>`}</td></tr>`).join("")}</tbody></table></div>` : empty("Connect your first tool.", "Create an API key to use this service from a harness or your own application.");
-  document.querySelectorAll("[data-revoke]").forEach(b=>b.addEventListener("click",()=>confirmAction("Revoke this key?","Tools using it will lose access immediately.",async()=>{await api("/api/keys/revoke",{id:b.dataset.revoke});await route();})));
+// API keys: a dropdown beside the main page's title, with the form to create one and the keys made so
+// far. A new key shows once, in the dropdown. #keys opens the main page with it open, so links to API
+// keys, and the return from signing in, still arrive there.
+const CHEVRON = '<svg viewBox="0 0 12 12" aria-hidden="true"><path d="m3 4.5 3 3 3-3" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/></svg>';
+function keysMenu() {
+  return `<div class="keys-menu" id="keys-menu"><button type="button" class="filter-button" id="keys-button" aria-expanded="false" aria-controls="keys-panel">API keys${CHEVRON}</button><div class="keys-panel" id="keys-panel" role="region" aria-label="API keys" hidden></div></div>`;
 }
-function reveal(title, value, explanation) {
-  modal(title,`<div class="stack"><p class="hint">${esc(explanation)}</p><pre class="code secret">${esc(value)}</pre><button class="primary" id="copy-secret">Copy ↗</button></div>`);
-  $("#copy-secret").addEventListener("click",e=>copy(value,e.currentTarget));
+function bindKeysMenu() {
+  const wrap = $("#keys-menu"), button = $("#keys-button"), panel = $("#keys-panel");
+  button.addEventListener("click", () => { if (panel.hidden) openKeys(); else closeKeys(); });
+  // A click elsewhere closes it (Escape too, below); the confirmation dialog for revoking a key does not.
+  const outside = event => {
+    if (!wrap.isConnected) document.removeEventListener("pointerdown", outside);
+    else if (!panel.hidden && !wrap.contains(event.target) && !$("#dialog").contains(event.target)) closeKeys();
+  };
+  document.addEventListener("pointerdown", outside);
 }
-function keyDialog() {
-  modal("Create an API key",`<form id="key-form" class="stack"><label>Key name<input name="label" placeholder="My coding tool" required maxlength="60"></label><label>Access<select name="access" id="key-access"><option value="all">All current and future models</option><option value="selected">Selected models only</option></select></label><div id="scope-list" class="scope-list" hidden>${models.map(m=>`<label class="check"><input type="checkbox" name="model" value="${esc(m.id)}">${esc(friendly(m))}</label>`).join("")}</div><p class="error" role="alert"></p><button class="primary" type="submit">Create key ↗</button></form>`);
-  $("#key-access").addEventListener("change",e=>{$("#scope-list").hidden=e.target.value==="all";});
-  formAction("#key-form",async(data,form)=>{const r=await api("/api/keys",{label:data.label,scopes:data.access==="all"?["*"]:new FormData(form).getAll("model")});$("#dialog").close();await route();reveal("Save your API key",r.key,"This is the only time the full key is shown. Store it privately; only its hash is retained by the service.");});
+document.addEventListener("keydown", event => {
+  const panel = $("#keys-panel");
+  if (event.key === "Escape" && panel && !panel.hidden && !$("#dialog").open) { closeKeys(); $("#keys-button").focus(); }
+});
+async function openKeys() {
+  const panel = $("#keys-panel"); if (!panel) return;
+  panel.hidden = false; $("#keys-button").setAttribute("aria-expanded", "true");
+  await fillKeys();
+  panel.querySelector("input, a")?.focus();
+}
+function closeKeys() {
+  const panel = $("#keys-panel"); if (!panel) return;
+  panel.hidden = true; $("#keys-button").setAttribute("aria-expanded", "false");
+  if (currentRoute()[0] === "keys") history.replaceState(null, "", "#" + home());
+}
+async function fillKeys(created = "") {
+  const panel = $("#keys-panel"); if (!panel) return;
+  if (!session.user) {
+    panel.innerHTML = `<h3>API keys</h3><p class="hint">Sign in to create keys for your tools. Keys are shown once and can be revoked at any time.</p><div class="keys-actions"><a class="primary small" href="#keys">Sign in ↗</a>${session.mode === "public" ? '<a class="outline small" href="#signup">Sign up</a>' : ""}</div>`;
+    return;
+  }
+  let result;
+  try { result = await api("/api/keys"); } catch (problem) { notice(problem.message); return; }
+  if (!panel.isConnected) return;
+  const top = created
+    ? `<div class="stack"><h3>Save your API key</h3><p class="hint">This is the only time the full key is shown. Store it privately; only its hash is retained by the service.</p><pre class="code secret">${esc(created)}</pre><div class="keys-actions"><button type="button" class="primary small" id="copy-secret">Copy ↗</button><button type="button" class="text-button" id="key-done">Done</button></div></div>`
+    : `<form id="key-form" class="stack"><h3>Create an API key</h3><p class="hint">Create individual keys for your tools. Keys are shown once and can be revoked at any time.</p><label>Key name<input name="label" placeholder="My coding tool" required maxlength="60"></label><label>Access<select name="access" id="key-access"><option value="all">All current and future models</option><option value="selected">Selected models only</option></select></label><div id="scope-list" class="scope-list" hidden>${models.map(m => `<label class="check"><input type="checkbox" name="model" value="${esc(m.id)}">${esc(friendly(m))}</label>`).join("")}</div><p class="error" role="alert"></p><div><button class="primary small" type="submit">Create key ↗</button></div></form>`;
+  const keys = result.keys.length
+    ? `<ul class="key-list">${result.keys.map(k => `<li><div><strong>${esc(k.label)}</strong><span>${esc(k.scopes.includes("*") ? "All current and future models" : k.scopes.length + " selected")} · ${esc(nowLabel(k.created))} · ${k.revoked ? "Revoked" : "Active"}</span></div>${k.revoked ? "" : `<button type="button" class="text-button" data-revoke="${esc(k.id)}">Revoke</button>`}</li>`).join("")}</ul>`
+    : '<p class="hint">No keys yet. Create one to use this service from a harness or your own application.</p>';
+  panel.innerHTML = `${top}<div class="keys-mine"><h3>Your keys</h3>${keys}</div>`;
+  if (created) {
+    $("#copy-secret").addEventListener("click", event => copy(created, event.currentTarget));
+    $("#key-done").addEventListener("click", () => fillKeys());
+  } else {
+    $("#key-access").addEventListener("change", event => { $("#scope-list").hidden = event.target.value === "all"; });
+    formAction("#key-form", async (data, form) => {
+      const made = await api("/api/keys", {label: data.label, scopes: data.access === "all" ? ["*"] : new FormData(form).getAll("model")});
+      await fillKeys(made.key);
+      $("#copy-secret")?.focus();
+    });
+  }
+  panel.querySelectorAll("[data-revoke]").forEach(button => button.addEventListener("click", () => confirmAction("Revoke this key?", "Tools using it will lose access immediately.", async () => { await api("/api/keys/revoke", {id: button.dataset.revoke}); await fillKeys(); $("#keys-panel input")?.focus(); })));
 }
 async function renderUsage(generation) {
   const r = await api("/api/usage"); if(generation !== viewGeneration) return;
-  header("Usage", "Your last 100 requests. Token counts come from the model server; missing counts stay unknown. Cached input is the part of the prompt the model server reused from earlier turns. A media job counts its images, or its seconds of video or sound.");
+  header("Usage", "");
   const made = x => Number.isInteger(x.images) ? (x.images ? `${x.images} image${x.images === 1 ? "" : "s"}` : `${((x.output_ms || 0) / 1000).toFixed(1)} s of output`) : `${x.input_tokens??"—"}${Number.isInteger(x.cached_tokens) ? ` (${x.cached_tokens})` : ""} / ${x.output_tokens??"—"} tokens`;
-  $("#view").innerHTML = r.requests.length ? `<div class="table-wrap"><table><thead><tr><th>Model</th><th>Time</th><th>Duration</th><th>Input (cached) / output tokens, or output made</th><th>Cost (USD)</th><th>Status</th></tr></thead><tbody>${r.requests.map(x=>`<tr><td>${esc(x.model)}</td><td>${esc(nowLabel(x.started))}</td><td>${(x.duration_ms/1000).toFixed(2)} s</td><td>${made(x)}</td><td>${dollars(x.cost_microusd)}${x.billing_state === "unbilled" ? " · Unbilled" : ""}</td><td>${esc(x.status)}</td></tr>`).join("")}</tbody></table></div>` : empty("A clear view of every request.", "Requests made with your API keys will appear here. Prompts and generated content are not stored.");
+  $("#view").innerHTML = r.requests.length ? `<div class="table-wrap"><table><thead><tr><th>Model</th><th>Time</th><th>Duration</th><th>Input (cached) / output tokens, or output made</th><th>Cost (USD)</th><th>Status</th></tr></thead><tbody>${r.requests.map(x=>`<tr><td>${esc(x.model)}</td><td>${esc(nowLabel(x.started))}</td><td>${(x.duration_ms/1000).toFixed(2)} s</td><td>${made(x)}</td><td>${dollars(x.cost_microusd)}${x.billing_state === "unbilled" ? " · Unbilled" : x.billing_state === "subscription" ? " · Subscription" : ""}</td><td>${esc(x.status)}</td></tr>`).join("")}</tbody></table></div>` : empty("A clear view of every request.", "Requests made with your API keys will appear here. Prompts and generated content are not stored.");
   await renderCredits();
+  await renderSubscriptions();
   if(session.user?.admin) await renderControlPanel();
 }
 function confirmAction(title, text, action) {
@@ -455,23 +671,24 @@ function connectDialog() {
   $("#compute-setup .panel")?.scrollIntoView({behavior: "smooth", block: "start"});
 }
 
-// The administrator's choices: the page people open first and the harnesses offered here. The same
-// form opens after the administrator's first sign-in and stays in Admin.
+// The administrator's choices: the page people open first and the harnesses offered here, which are
+// the harnesses inside Yougori. Yougori itself has no box: it is offered while any harness inside it
+// is (bindChoices). The same form opens after the administrator's first sign-in and stays in Admin.
 const HOMES = [["harnesses", "Harnesses", "Coding and security tools that run in Sandbox VMs."],
   ["models", "Models", "The models this inference serves, with the request for each."],
   ["sandboxes", "Sandboxes", "Sandbox VMs on computers people contribute."]];
 function choicesForm(submit, compact = false) {
-  const groups = categories.map(c => [c, harnesses.filter(h => h.category === c.id).sort(byName(h => h.name))]).filter(([, list]) => list.length);
+  const groups = categories.map(c => [c, harnesses.filter(h => h.category === c.id && h.id !== YOUGORI).sort(byName(h => h.name))]).filter(([, list]) => list.length);
   if (compact) {
     // Admin's version: the main page as one row of options and the harnesses by name.
     const box = (type, name, value, checked, title) => `<label class="check"><input type="${type}" name="${name}" value="${esc(value)}"${checked ? " checked" : ""}>${esc(title)}</label>`;
     return `<form id="choices-form" class="stack"><div class="choice-home" role="radiogroup" aria-labelledby="choice-home"><span class="choice-label" id="choice-home">Main page</span>${HOMES.map(([id, title]) => box("radio", "home", id, id === home(), title)).join("")}</div><p class="hint" id="choice-sandboxes" hidden>Sandboxes are switched off. Switch them on under Sandboxes.</p>`
-      + `<div class="choice-tools"><span class="choice-label">Harnesses</span><p class="hint" id="choice-count" aria-live="polite"></p><button type="button" class="text-button" data-choose="all">Select all</button><button type="button" class="text-button" data-choose="none">Clear</button></div>${groups.map(([c, list]) => `<div class="choice-names" role="group" aria-label="${esc(c.label)}"><p class="choice-category">${esc(c.label)}</p>${list.map(h => box("checkbox", "harness", h.id, h.offered !== false, h.name)).join("")}</div>`).join("")}`
+      + `<div class="choice-tools"><span class="choice-label">Harnesses inside Yougori</span><p class="hint" id="choice-count" aria-live="polite"></p><button type="button" class="text-button" data-choose="all">Select all</button><button type="button" class="text-button" data-choose="none">Clear</button></div>${groups.map(([c, list]) => `<div class="choice-names" role="group" aria-label="${esc(c.label)}"><p class="choice-category">${esc(c.label)}</p>${list.map(h => box("checkbox", "harness", h.id, h.offered !== false, h.name)).join("")}</div>`).join("")}`
       + `<p class="error" role="alert"></p><div><button class="primary" type="submit">${esc(submit)}</button></div></form>`;
   }
   const option = (type, name, value, checked, title, text) => `<label class="choice"><input type="${type}" name="${name}" value="${esc(value)}"${checked ? " checked" : ""}><span><strong>${esc(title)}</strong><span>${esc(text)}</span></span></label>`;
   return `<form id="choices-form" class="choices"><fieldset class="choice-group"><legend>Main page</legend><div class="choice-list">${HOMES.map(([id, title, text]) => option("radio", "home", id, id === home(), title, text)).join("")}</div><p class="hint" id="choice-sandboxes" hidden>Sandboxes are switched off. Switch them on in Admin, under Sandboxes.</p></fieldset>`
-    + `<fieldset class="choice-group"><legend>Harnesses</legend><div class="choice-tools"><p class="hint" id="choice-count" aria-live="polite"></p><button type="button" class="text-button" data-choose="all">Select all</button><button type="button" class="text-button" data-choose="none">Clear</button></div>${groups.map(([c, list]) => `<p class="choice-category">${esc(c.label)}</p><div class="choice-list">${list.map(h => option("checkbox", "harness", h.id, h.offered !== false, h.name, h.description)).join("")}</div>`).join("")}</fieldset>`
+    + `<fieldset class="choice-group"><legend>Harnesses inside Yougori</legend><div class="choice-tools"><p class="hint" id="choice-count" aria-live="polite"></p><button type="button" class="text-button" data-choose="all">Select all</button><button type="button" class="text-button" data-choose="none">Clear</button></div>${groups.map(([c, list]) => `<p class="choice-category">${esc(c.label)}</p><div class="choice-list">${list.map(h => option("checkbox", "harness", h.id, h.offered !== false, h.name, h.description)).join("")}</div>`).join("")}</fieldset>`
     + `<p class="error" role="alert"></p><div><button class="primary" type="submit">${esc(submit)}</button></div></form>`;
 }
 function bindChoices(saved) {
@@ -486,12 +703,14 @@ function bindChoices(saved) {
   formAction("#choices-form", async (data, element) => {
     const chosen = new FormData(element).getAll("harness");
     if (data.home === "harnesses" && !chosen.length) throw new Error("Offer at least one harness, or choose another main page.");
-    await api("/api/admin/choices", {home: data.home, harnesses: chosen});
+    // Yougori goes with the harnesses inside it: its page lists them and its command starts them.
+    const offer = chosen.length && harnesses.some(h => h.id === YOUGORI) ? [YOUGORI, ...chosen] : chosen;
+    await api("/api/admin/choices", {home: data.home, harnesses: offer});
     await saved(data.home);
   });
 }
 function renderSetup() {
-  header("Set up your inference", "Choose the page people see first and the harnesses you offer. You can change both later in Admin.");
+  header("Set up your inference", "Choose what people see first and the harnesses you offer. You can change both later in Admin.");
   $("#view").innerHTML = panel("Main page and harnesses", choicesForm("Save and continue ↗"));
   bindChoices(async chosen => { history.replaceState(null, "", "#" + chosen); await loadSession(); });
 }
@@ -606,11 +825,9 @@ async function renderAdmin(generation) {
     + adminSection("admin-choices", "Main page and harnesses", "What people see first, and the harnesses you offer.", choicesForm("Save choices ↗", true))
     + adminSection("admin-identity", "Website identity", "The name, tagline and colour style everyone sees.", `<form id="branding-form" class="stack"><div class="admin-row"><label>Website name<input name="name" maxlength="80" required value="${esc(session.site.name)}"></label><label>Tagline<input name="tagline" maxlength="200" value="${esc(session.site.tagline)}"></label></div><fieldset class="palette-group"><legend>Color style</legend><div class="palette-options">${PALETTES.map(([id, title]) => `<label class="palette-option"><input type="radio" name="palette" value="${id}"${id === document.documentElement.dataset.palette ? " checked" : ""}><span class="palette-swatch" data-palette="${id}" aria-hidden="true"><i></i><i></i><i></i><i></i></span>${esc(title)}</label>`).join("")}</div></fieldset><p class="hint">Every visitor sees this style, and each person can still switch between light and dark.</p><p class="error" role="alert"></p><div><button class="primary" type="submit">Save identity ↗</button></div></form>`)
     + adminSection("admin-people", "People", "Who can sign in, and who manages this inference.", `<form id="invite-form" class="stack"><div class="admin-row"><label>Email address<input name="email" type="email" required></label><label class="check"><input name="admin" type="checkbox">Invite as administrator</label><button class="primary" type="submit">Create invitation ↗</button></div><p class="hint">${esc(access)} An invitation is for one email address and expires after 24 hours.</p><p class="error" role="alert"></p></form><div id="member-settings" class="member-list"></div><p class="hint">Administrators manage compute, prices, wallets and people. At least one must remain.</p>`)
-    + `<div id="slot-prices"></div><div id="slot-media"></div><div id="slot-payments"></div><div id="slot-activity"></div></div>`;
-  await showCompute();
-  if(!$("#branding-form")) return;
-  sectionRail([...document.querySelectorAll("#admin-grid .admin-section")].map(section => ({id: section.id, label: section.querySelector("h3").textContent})));
-  if(adminFocus === "contributor") { adminFocus = ""; $("#admin-local").scrollIntoView({block: "start"}); $("#contributor-inspect input[name=code]").focus({preventScroll: true}); }
+    + `<div id="slot-prices"></div><div id="slot-subscriptions"></div><div id="slot-media"></div><div id="slot-payments"></div><div id="slot-activity"></div></div>`;
+  // These forms work as soon as they show, while Local GPUs below still loads: a Save pressed
+  // before would otherwise submit the page itself.
   $("#add-endpoint").addEventListener("click",connectDialog);
   $("#refresh-models").addEventListener("click",async e=>{e.currentTarget.disabled=true;try{await api("/api/admin/refresh",{});models=(await api("/api/models")).models;await route();}catch(problem){notice(problem.message);e.currentTarget.disabled=false;}});
   $("#model-servers").addEventListener("click",event=>{
@@ -620,6 +837,10 @@ async function renderAdmin(generation) {
   formAction("#invite-form",async d=>{const r=await api("/api/admin/invitations",{...d,admin:d.admin === "on"});$('#invitation-result')?.remove();const result=document.createElement('div');result.id='invitation-result';result.className='stack';result.innerHTML=`<p class="hint">Invitation for ${esc(r.email)}. Expires in 24 hours. Share this code privately.</p><pre class="code secret">${esc(r.invitation)}</pre><button class="secondary" type="button" data-copy="${esc(r.invitation)}">Copy invitation</button>`;$('#invite-form').append(result);bindCopies(result);});
   formAction("#branding-form",async d=>{await api("/api/admin/site",d);await loadSession();notice("Website identity saved.");});
   bindChoices(async () => { await loadSession(); notice("Main page and harnesses saved."); });
+  await showCompute();
+  if(!$("#branding-form")) return;
+  sectionRail([...document.querySelectorAll("#admin-grid .admin-section")].map(section => ({id: section.id, label: section.querySelector("h3").textContent})));
+  if(adminFocus === "contributor") { adminFocus = ""; $("#admin-local").scrollIntoView({block: "start"}); $("#contributor-inspect input[name=code]").focus({preventScroll: true}); }
 }
 async function route() {
   if(!session) return;
@@ -638,13 +859,15 @@ async function route() {
     return;
   }
   // Unknown addresses, and Harnesses when none are offered, open the main page.
-  if(!PAGES.includes(name) || (name === "harnesses" && !offeredHarnesses().length && home() !== "harnesses")) { name = home(); item = ""; }
+  if(!PAGES.includes(name)) { name = home(); item = ""; }
   if(MAIN.includes(name)) returnTo = location.hash.slice(1);
   // Another page opens at its top; the same page drawn again (after a save) keeps its place.
-  if(name !== shownPage) { shownPage = name; scrollTo(0, 0); }
+  // Harnesses, Models and Sandboxes are one main page; a tool and a model each have their own.
+  const page = (MAIN.includes(name) || name === "keys") && !item ? "main" : item ? name + "/" + item : name;
+  if(page !== shownPage) { shownPage = page; scrollTo(0, 0); }
   if(choosing(name)) { renderSetup(); return; }
   try {
-    if(name==="sandboxes")await renderSandboxes();else if(name==="contribute")renderContributor();else if(name==="connect")renderDeviceConnect();else if(name==="models")item?renderModel(item):renderModels();else if(name==="keys")await renderKeys(generation);else if(name==="usage")await renderUsage(generation);else if(name==="admin")await renderAdmin(generation);else {renderHarnesses();if(item){history.replaceState(null,"","#harnesses");renderHarness(item);}}
+    if(name==="contribute")renderContributor();else if(name==="connect")renderDeviceConnect();else if(name==="keys"){renderOverview();await openKeys();}else if(name==="usage")await renderUsage(generation);else if(name==="admin")await renderAdmin(generation);else if(name==="models"&&item)renderModel(item);else if(name==="harnesses"&&item)renderHarness(item);else{renderOverview();restore("main",id=>`#harnesses-list [data-harness="${id}"]`);}
   } catch(problem){notice(problem.message);}
 }
 $("#dialog-close").addEventListener("click",()=>$("#dialog").close());
@@ -675,4 +898,4 @@ formAction("#login-form",async data=>{await api(authMode === "signin" ? "/api/lo
 $("#signout").addEventListener("click",async()=>{try{await api("/api/logout",{});viewGeneration++;Object.keys(catalogState).forEach(key=>delete catalogState[key]);$("#dialog").close();$("#view").replaceChildren();notice("");history.replaceState(null,"",location.pathname+location.search);await loadSession();}catch(problem){notice(problem.message);}});
 window.addEventListener("hashchange",route);
 loadSession().catch(problem=>notice(problem.message));
-setInterval(async()=>{if(!session||document.hidden||$("#dialog").open)return;try{models=(await api("/api/models")).models;const [name,item]=currentRoute();if(name==="models"&&!item&&!choosing(name)&&!(models.length&&redrawModels?.()))renderModels();}catch{/* Keep the last view; never mark stale data as newly observed. */}},15000);
+setInterval(async()=>{if(!session||document.hidden||$("#dialog").open)return;try{models=(await api("/api/models")).models;const [name,item]=currentRoute();if(MAIN.includes(name)&&!item&&$("#models-body")&&!(models.length&&redrawModels?.()))renderModels();}catch{/* Keep the last view; never mark stale data as newly observed. */}},15000);

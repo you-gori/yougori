@@ -1,12 +1,13 @@
-"""The contributor connector's questions and answers: what the Yougori CLI passes (--list,
---models, --sandbox) and the typed questions of older or scripted runs. A fake Yougori; nothing
-is shared, started or paired.
+"""The contributor connector and the answers `yougori inference connect` passes it: the model
+environments it shares (--models), the Sandbox VM limits (--sandbox) and the models it ran only
+for the website (--release), stopped when it disconnects. A fake Yougori; nothing is shared,
+started or paired.
 
 Run: python -I -B examples/hub/inference-solver/tests/test_compute_node.py
 """
 import contextlib
+import hashlib
 import io
-import json
 from pathlib import Path
 import sys
 import tempfile
@@ -18,6 +19,7 @@ sys.path.insert(0, str(SITE))
 import compute_node
 from compute_adapter import ComputeError
 
+SERVER = "https://argon.yougori.com"
 MODELS = [
     {"id": "env-1", "name": "Qwen/Qwen2.5-0.5B-Instruct", "state": "ready", "shared": True, "place": "local"},
     {"id": "env-2", "name": "Other/Model", "state": "unavailable", "shared": False, "place": "local"},
@@ -35,6 +37,7 @@ class FakeAdapter:
     def __init__(self, command, folder):
         self.shared = {"env-1", "env-old"}
         self.changes = []
+        self.calls = []
         FakeAdapter.made.append(self)
 
     def inventory(self):
@@ -43,22 +46,39 @@ class FakeAdapter:
     def share(self, environment, enabled=True):
         self.changes.append((environment, enabled))
 
+    def call(self, method, **params):
+        self.calls.append((method, params))
+        return {}
+
 
 class FakeGrid:
     capacity = None
+    contributing = False
 
     def __init__(self, command, folder, capacity):
         FakeGrid.capacity = capacity
-        raise Contributing()
+        if not FakeGrid.contributing:
+            raise Contributing()
+        self.stopped = 0
+
+    def stop_all(self):
+        self.stopped += 1
+
+    def advertisement(self):
+        return {}
+
+    def inventory(self):
+        return {}
 
 
 class ConnectorTest(unittest.TestCase):
     def setUp(self):
         FakeAdapter.made.clear()
         FakeAdapter.models = MODELS
-        FakeGrid.capacity = None
+        FakeGrid.capacity, FakeGrid.contributing = None, False
         home = tempfile.TemporaryDirectory()
         self.addCleanup(home.cleanup)
+        self.home = Path(home.name)
         for patcher in (
             patch.object(compute_node, "executable", return_value="yougori"),
             patch.object(compute_node, "Adapter", FakeAdapter),
@@ -70,28 +90,16 @@ class ConnectorTest(unittest.TestCase):
             patcher.start()
             self.addCleanup(patcher.stop)
 
-    def connect(self, *argv, typed=()):
-        """Runs the connector with these arguments and typed answers; returns what it printed."""
-        printed, answers = io.StringIO(), iter(typed)
-
-        def answer(prompt=""):
-            printed.write(prompt + "\n")
-            return next(answers)
-
+    def connect(self, *argv):
+        """Runs the connector with these arguments; returns what it printed."""
+        printed = io.StringIO()
         self.printed = printed
-        with patch.object(sys, "argv", ["compute_node.py", *argv]), patch("builtins.input", answer), contextlib.redirect_stdout(printed):
-            compute_node.main("https://argon.yougori.com")
+        with patch.object(sys, "argv", ["compute_node.py", *argv]), contextlib.redirect_stdout(printed):
+            compute_node.main(SERVER)
         return printed.getvalue()
 
     def changes(self):
         return FakeAdapter.made[-1].changes
-
-    def test_lists_the_models_for_the_cli_and_changes_nothing(self):
-        listed = json.loads(self.connect("--list"))
-        self.assertEqual(listed, {"models": [
-            {"id": "env-1", "name": "Qwen/Qwen2.5-0.5B-Instruct", "ready": True, "hint": "running", "shared": True},
-            {"id": "env-2", "name": "Other/Model", "ready": False, "hint": "stopped; it starts if you choose it", "shared": False}]})
-        self.assertEqual(self.changes(), [])
 
     def test_uses_the_answers_the_cli_passes(self):
         with self.assertRaises(Contributing):
@@ -116,34 +124,97 @@ class ConnectorTest(unittest.TestCase):
             self.assertIn(words, str(refused.exception))
             self.assertEqual(self.changes(), [])
 
-    def test_typed_questions_list_the_models_in_words(self):
-        with self.assertRaises(Contributing):
-            printed = self.connect(typed=["2", "n"])
-        printed = self.printed.getvalue()
-        self.assertIn("Which models may https://argon.yougori.com use?", printed)
-        self.assertIn("  1. Qwen/Qwen2.5-0.5B-Instruct (running)", printed)
-        self.assertIn("  2. Other/Model (stopped; it starts if you choose it)", printed)
-        self.assertIn("or press Enter for none", printed)
-        self.assertIn(("env-2", True), self.changes())
-        self.assertEqual(FakeGrid.capacity, {})
-        with self.assertRaises(ComputeError):
-            self.connect(typed=["3", "n"])
+    def test_runs_only_with_the_answers_of_yougori_inference_connect(self):
+        for argv in ((), ("--models", "env-1"), ("--sandbox", "none")):
+            with self.subTest(argv=argv), self.assertRaises(ComputeError) as refused:
+                self.connect(*argv)
+            self.assertEqual(str(refused.exception), "Connect this computer with: yougori inference connect " + SERVER)
+        self.assertEqual(FakeAdapter.made, [])
 
-    def test_a_computer_without_models_says_so_and_can_lend_sandbox_vms(self):
-        FakeAdapter.models = []
-        with self.assertRaises(Contributing):
-            self.connect(typed=["y", "2", "4", "1"])
-        printed = self.printed.getvalue()
-        self.assertIn("This computer has no models in Yougori yet", printed)
-        self.assertIn("yougori model run", printed)
-        self.assertNotIn("Which models", printed)
-        self.assertEqual(FakeGrid.capacity, {"cpu": 2, "memory_gb": 4, "slots": 1})
-        with self.assertRaises(ComputeError) as refused:
-            self.connect(typed=["n"])
-        self.assertIn("Nothing to share", str(refused.exception))
+    def test_a_website_without_codes_lets_the_computer_join_at_once(self):
+        FakeGrid.contributing = True
+        asked = []
 
-    def test_a_rented_model_does_not_start_when_chosen(self):
-        self.assertEqual(compute_node.model_state({"state": "unavailable", "place": "neocloud"}), "not running")
+        def post(link, path, payload, token=None, timeout=30):
+            asked.append(path)
+            if path == "/api/compute/pair/start":
+                return {"code": "ABCD1234", "device": "device", "expires_in": 600, "connected": True}
+            raise KeyboardInterrupt
+
+        with patch.object(compute_node.Link, "post", post), \
+                patch.object(compute_node, "receive", lambda link, token, deliver, stopped, connected=None: stopped.wait(5)), \
+                self.assertRaises(KeyboardInterrupt):
+            self.connect("--models", "env-1", "--sandbox", "none")
+        printed = self.printed.getvalue()
+        self.assertIn(SERVER + " lets computers join without a code: this computer joined.", printed)
+        self.assertNotIn("enter this computer code", printed)
+        self.assertNotIn("/api/compute/pair/poll", asked)
+        folder = self.home / "InferenceSolver" / ("node-" + hashlib.sha256(SERVER.encode()).hexdigest()[:16])
+        self.assertTrue((folder / "credential").is_file())
+
+    def test_ctrl_c_stops_the_models_it_ran_for_the_website_and_no_others(self):
+        # An approved computer: its credential is saved, so it starts serving at once.
+        FakeGrid.contributing = True
+        folder = self.home / "InferenceSolver" / ("node-" + hashlib.sha256(SERVER.encode()).hexdigest()[:16])
+        folder.mkdir(parents=True)
+        (folder / "credential").write_text("saved-token", encoding="utf-8")
+
+        def interrupted(*_args, **_kwargs):
+            raise KeyboardInterrupt
+
+        with patch.object(compute_node.Link, "post", interrupted), \
+                patch.object(compute_node, "receive", lambda link, token, deliver, stopped, connected=None: stopped.wait(5)), \
+                self.assertRaises(KeyboardInterrupt):
+            self.connect("--models", "env-1,env-2", "--sandbox", "none", "--release", "env-2,env-9")
+        # Only a chosen model the CLI started for the website stops; the person's own one keeps running.
+        self.assertEqual(FakeAdapter.made[-1].calls, [("stop_model", {"environmentId": "env-2"})])
+        self.assertIn("Stopping the models this computer ran for " + SERVER, self.printed.getvalue())
+
+    def test_says_when_each_model_can_answer(self):
+        """The connector says the website lists each model while it can answer, then one line each
+        time a shared model's state changes: a download at most once a minute, then ready."""
+        FakeGrid.contributing = True
+        folder = self.home / "InferenceSolver" / ("node-" + hashlib.sha256(SERVER.encode()).hexdigest()[:16])
+        folder.mkdir(parents=True)
+        (folder / "credential").write_text("saved-token", encoding="utf-8")
+        downloading = {**MODELS[0], "state": "downloading", "progress": {"received": 3400000000, "total": 8000000000, "rate": 5000000}}
+        FakeAdapter.models = [downloading, MODELS[1]]
+        reported = []
+
+        def post(link, path, payload, token=None, timeout=30):
+            if payload.get("action") == "inventory":
+                reported.append([model["state"] for model in payload["models"]])
+                if len(reported) == 2:
+                    FakeAdapter.models = MODELS  # It has downloaded and loaded.
+                if len(reported) == 4:
+                    raise KeyboardInterrupt
+            return {}
+
+        with patch.object(compute_node.Link, "post", post), patch.object(compute_node, "INVENTORY_SECONDS", 0), \
+                patch.object(compute_node, "receive", lambda link, token, deliver, stopped, connected=None: stopped.wait(5)), \
+                self.assertRaises(KeyboardInterrupt):
+            self.connect("--models", "env-1", "--sandbox", "none")
+        printed = self.printed.getvalue()
+        self.assertEqual(reported, [["downloading", "unavailable"]] * 2 + [["ready", "unavailable"]] * 2)
+        self.assertIn("Connected. " + SERVER + " lists each chosen model while it can answer. Keep this terminal running; Ctrl+C disconnects.", printed)
+        self.assertNotIn("appear automatically", printed)
+        # Once for two reports of the download; nothing for a model this computer does not share.
+        self.assertEqual(printed.count("downloading"), 1)
+        self.assertIn("Qwen/Qwen2.5-0.5B-Instruct: downloading 42% (3.4 of 8.0 GB)\n", printed)
+        self.assertEqual(printed.count("Qwen/Qwen2.5-0.5B-Instruct is ready; " + SERVER + " lists it\n"), 1)
+        self.assertNotIn("Other/Model", printed)
+
+    def test_each_state_is_said_in_words(self):
+        said, printed = {}, io.StringIO()
+        models = [{"id": "env-1", "name": "test/one", "shared": True, "state": state, **extra} for state, extra in (
+            ("starting", {}), ("downloading", {"progress": {"received": 340000000, "total": 800000000, "rate": 0}}),
+            ("loading", {}), ("unavailable", {}))]
+        with contextlib.redirect_stdout(printed):
+            for model in models:
+                compute_node.announce([model], SERVER, said)
+            compute_node.announce(models[-1:], SERVER, said)  # No change: nothing more.
+        self.assertEqual(printed.getvalue().splitlines(), ["test/one is starting", "test/one: downloading 42% (340 of 800 MB)",
+                                                           "test/one is loading onto the GPU", "test/one could not load"])
 
 
 if __name__ == "__main__":

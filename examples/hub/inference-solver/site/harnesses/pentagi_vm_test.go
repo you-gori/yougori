@@ -21,6 +21,37 @@ func testYougoriVM(t *testing.T) *vmClient {
 	t.Cleanup(func() { root.Close() })
 	return &vmClient{root: root, workers: map[string]bool{"worker": true}, aliases: map[string]string{"worker": "worker", "alias": "worker"}, executions: map[string]*vmExecution{}}
 }
+func TestYougoriVMRunsInItsImageOrOnTheSharedBase(t *testing.T) {
+	vm := map[string]string{"SOLVER_VM_RUNTIME": "1"}
+	shared := map[string]string{"SOLVER_VM_RUNTIME": "1", "SOLVER_HARNESS": "pentagi"}
+	cases := []struct {
+		marker string
+		vars   map[string]string
+		want   bool
+	}{
+		{"pentagi\n", vm, true},
+		{"yougori\n", shared, true},
+		{"yougori\n", vm, false},
+		{"yougori\n", map[string]string{"SOLVER_VM_RUNTIME": "1", "SOLVER_HARNESS": "strix"}, false},
+		{"strix\n", shared, false},
+		{"pentagi\n", map[string]string{"SOLVER_HARNESS": "pentagi"}, false},
+	}
+	for _, c := range cases {
+		vars := c.vars
+		if got := yougoriVMHere(c.marker, func(key string) string { return vars[key] }); got != c.want {
+			t.Errorf("%q with %v: got %v, want %v", c.marker, c.vars, got, c.want)
+		}
+	}
+}
+
+func TestYougoriVMCommandsGetTheSecretAnswersAndNothingElse(t *testing.T) {
+	env := vmCommandEnv([]string{"YOUGORI_SECRET_LOGIN_PASSWORD=pass word", "OPENAI_API_KEY=key", "PATH=/elsewhere", "YOUGORI_SECRETS=no", "HOME=/root"})
+	want := []string{"PATH=/opt/solver/tool/bin:/usr/local/bin:/usr/bin:/bin", "HOME=/home/node", "LANG=C.UTF-8", "TERM=xterm-256color", "YOUGORI_SECRET_LOGIN_PASSWORD=pass word"}
+	if strings.Join(env, "\n") != strings.Join(want, "\n") {
+		t.Fatalf("got %q, want %q", env, want)
+	}
+}
+
 func TestYougoriVMFilesAndTraversal(t *testing.T) {
 	v := testYougoriVM(t)
 	ctx := context.Background()

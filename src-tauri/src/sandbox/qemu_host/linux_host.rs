@@ -43,6 +43,7 @@ use std::time::{Duration, Instant};
 
 use super::bootstrap::{encode_bootstrap, write_bootstrap_file};
 use super::early_exit::{classify_report, log_tail};
+use super::network_filter::{NetworkFilter, Reach};
 use super::socket::{connect, SocketError, SocketTimeouts};
 use crate::foundation::evidence::OsKind;
 use crate::foundation::process::{
@@ -123,6 +124,8 @@ pub struct LinuxCleanupFailure {
 struct HeldQemu {
     process: HostProcess,
     directory: PathBuf,
+    /// The filter of its network card's frames, for a profile with a card.
+    network: Option<NetworkFilter>,
 }
 
 /// The Linux `QemuHost` (module notes).
@@ -343,8 +346,24 @@ impl LinuxQemuHost {
         {
             return Err(self.discard(process, &directory, failure));
         }
+        // A card's frames pass the host's filter or nowhere: a filter that cannot start
+        // ends the launch.
+        let network = match Reach::of(plan) {
+            Some(reach) => match NetworkFilter::start(
+                &reach,
+                plan.profile().control().network_sockets(),
+                process.identity().pid,
+            ) {
+                Ok(filter) => Some(filter),
+                Err(detail) => {
+                    let failure = prepare(format!("the VM's network filter could not start: {detail}"));
+                    return Err(self.discard(process, &directory, failure));
+                }
+            },
+            None => None,
+        };
         let identity = process.identity();
-        self.held.insert(identity, HeldQemu { process, directory });
+        self.held.insert(identity, HeldQemu { process, directory, network });
         self.secrets.insert(identity, secret);
         Ok(identity)
     }
@@ -566,6 +585,7 @@ impl QemuHost for LinuxQemuHost {
         self.secrets.remove(process);
         if let Some(held) = self.held.remove(process) {
             drop(held.process);
+            drop(held.network);
             if let Err(error) = fs::remove_dir_all(&held.directory) {
                 self.cleanup_failures.push(LinuxCleanupFailure {
                     process: Some(*process),
@@ -630,6 +650,7 @@ impl Drop for LinuxQemuHost {
         for (_, held) in std::mem::take(&mut self.held) {
             let _ = held.process.terminate(at_once);
             drop(held.process);
+            drop(held.network);
             let _ = fs::remove_dir_all(&held.directory);
         }
     }

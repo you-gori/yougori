@@ -101,6 +101,9 @@ impl Options {
                         b == b'_' || b.is_ascii_alphabetic() || (i > 0 && b.is_ascii_digit())
                     })
                     || v.contains('\0')
+                    // The agent of the CUDA runtime and the appliance refuses a value over 64 KiB
+                    // (appliance/agent/workload_options.go), so a larger one is refused here first,
+                    // before it is saved, instead of at the agent after the options changed.
                     || v.len() > 65536
             })
         {
@@ -161,5 +164,21 @@ impl Options {
             return Err("Workload options exceed 256 KiB".into());
         }
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod value_limit_tests {
+    use super::Options;
+
+    #[test]
+    fn a_value_the_agent_refuses_is_refused_before_it_is_saved() {
+        // workload_options.go refuses len(value) > 65536 bytes, whatever the name's length.
+        let mut options = Options::default();
+        let name = "N".repeat(200);
+        options.environment.insert(name.clone(), "x".repeat(65536));
+        options.validate().unwrap();
+        options.environment.get_mut(&name).unwrap().push('x');
+        assert!(options.validate().unwrap_err().contains("Invalid environment variable"));
     }
 }

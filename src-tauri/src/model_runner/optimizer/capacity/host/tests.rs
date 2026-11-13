@@ -6,6 +6,7 @@ fn sample() -> HostSnapshot {
         host: probe::identity("1234567890abcdef1234567890abcdef").unwrap(),
         total: 32 * GIB,
         free: 20 * GIB,
+        commit_bound: false,
         initialization_slots: 8,
         observed_at: MonotonicTime::ZERO,
     }
@@ -236,10 +237,13 @@ fn host_only_refresh_collects_closed_records_into_the_existing_history_owner() {
 
 #[test]
 fn windows_reusable_memory_is_capped_by_physical_and_commit_headroom() {
-    assert_eq!(windows_memory(64 * GIB, 30 * GIB, 40 * GIB).unwrap(), (64 * GIB, 30 * GIB));
-    assert_eq!(windows_memory(64 * GIB, 30 * GIB, 2 * GIB).unwrap(), (64 * GIB, 2 * GIB));
-    assert_eq!(windows_memory(64 * GIB, 30 * GIB, 0).unwrap(), (64 * GIB, 0));
-    assert_eq!(windows_memory(64 * GIB, 0, 40 * GIB).unwrap(), (64 * GIB, 0));
+    // The last field: the commit left decided the reading, not physical memory.
+    assert_eq!(windows_memory(64 * GIB, 30 * GIB, 40 * GIB).unwrap(), (64 * GIB, 30 * GIB, false));
+    assert_eq!(windows_memory(64 * GIB, 30 * GIB, 2 * GIB).unwrap(), (64 * GIB, 2 * GIB, true));
+    assert_eq!(windows_memory(64 * GIB, 30 * GIB, 0).unwrap(), (64 * GIB, 0, true));
+    assert_eq!(windows_memory(64 * GIB, 0, 40 * GIB).unwrap(), (64 * GIB, 0, false));
+    // A page file Windows sizes: physical memory decides, as the probe passes it twice.
+    assert_eq!(windows_memory(64 * GIB, 30 * GIB, 30 * GIB).unwrap(), (64 * GIB, 30 * GIB, false));
     assert!(windows_memory(0, 0, GIB).is_err());
     assert!(windows_memory(64 * GIB, 65 * GIB, 80 * GIB).is_err());
 }
@@ -276,4 +280,61 @@ async fn actual_host_capacity_probe_without_a_gpu_query() {
             .saturating_duration_since(sample.observed_at)
             <= MAX_AGE
     );
+}
+
+/// A host ledger with one 4 GiB VM granted under `vm`, and that grant.
+fn one_vm(owner: &Mutex<Option<Accounting<Arc<ManualClock>>>>, snapshot: &HostSnapshot) -> (SharedLedger<Arc<ManualClock>>, TenantId, ReservationId) {
+    let shared = publish(owner, |host| Accounting::for_host(clock(), host), snapshot).unwrap();
+    let vm = TenantId::new("vm").unwrap();
+    let mut ledger = shared.lock().unwrap();
+    ledger.set_tenant_budget(vm.clone(), RAM, 32 * GIB).unwrap();
+    let Admission::Granted(id) = ledger.reserve(ram_request(vm.clone(), 4 * GIB)).unwrap() else { panic!("fits") };
+    drop(ledger);
+    (shared, vm, id)
+}
+
+#[test]
+fn a_running_vm_is_charged_once_on_windows_when_the_commit_left_decides() {
+    let owner = Mutex::new(None);
+    let commit = HostSnapshot { commit_bound: true, ..sample() };
+    let (shared, vm, granted) = one_vm(&owner, &commit);
+    // Granted but not created yet: nothing runs, so nothing is taken out of the observed use.
+    publish(&owner, |_| panic!("one owner"), &HostSnapshot { free: 20 * GIB, ..commit.clone() }).unwrap();
+    assert_eq!(shared.lock().unwrap().capacity(RAM).unwrap().unmanaged_in_use, 12 * GIB);
+    shared.lock().unwrap().begin_create(granted).unwrap();
+    // QEMU committed the guest's 4 GiB: a fixed page file's commit is 4 GiB less, the VM itself.
+    publish(&owner, |_| panic!("one owner"), &HostSnapshot { free: 16 * GIB, ..commit }).unwrap();
+    let ledger = shared.lock().unwrap();
+    let expected = if cfg!(windows) { 12 * GIB } else { 16 * GIB };
+    assert_eq!(ledger.capacity(RAM).unwrap().unmanaged_in_use, expected);
+    drop(ledger);
+    // A second 4 GiB VM fits beside it on Windows: 32 - 3.2 reserve - 12 observed - 4 running = 12.8.
+    if cfg!(windows) {
+        assert!(shared.lock().unwrap().reserve(ram_request(vm, 4 * GIB)).is_ok());
+    }
+}
+
+#[test]
+fn a_running_vm_keeps_its_whole_reservation_beside_a_physical_reading() {
+    // A page file Windows sizes, or Linux: the reading holds only the pages a guest touched, so its
+    // reservation is never taken out of the observed use, or its untouched rest is offered again.
+    let owner = Mutex::new(None);
+    let (shared, vm, granted) = one_vm(&owner, &sample());
+    shared.lock().unwrap().begin_create(granted).unwrap();
+    // The idle 4 GiB guest touched 1 GiB of its memory.
+    publish(&owner, |_| panic!("one owner"), &HostSnapshot { free: 19 * GIB, ..sample() }).unwrap();
+    let mut ledger = shared.lock().unwrap();
+    assert_eq!(ledger.capacity(RAM).unwrap().unmanaged_in_use, 13 * GIB);
+    // 32 - 3.2 reserve - 13 observed - 4 reserved leaves 11.8 GiB: 11 fits, 12 does not.
+    assert!(ledger.reserve(ram_request(vm.clone(), 12 * GIB)).is_err());
+    assert!(ledger.reserve(ram_request(vm, 11 * GIB)).is_ok());
+}
+
+#[test]
+fn a_page_file_windows_sizes_itself_is_recognised() {
+    assert!(managed_page_file("?:\\pagefile.sys\0\0"));
+    assert!(managed_page_file("C:\\pagefile.sys 0 0\0"));
+    assert!(!managed_page_file("C:\\pagefile.sys 4096 8192\0"));
+    assert!(!managed_page_file(""));
+    assert!(managed_page_file("D:\\pagefile.sys 1024 2048\0?:\\pagefile.sys\0"));
 }

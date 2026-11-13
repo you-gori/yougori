@@ -451,6 +451,7 @@ impl FakeLayout {
             vsock_cid: None,
             egress_endpoints: Vec::new(),
             workload_image: None,
+            targets: None,
         }
     }
 }
@@ -458,11 +459,14 @@ impl FakeLayout {
 impl LaunchLayout for FakeLayout {
     fn inputs(
         &self,
-        _request: &crate::sandbox::backend::LaunchRequest,
+        request: &crate::sandbox::backend::LaunchRequest,
         vm: VmInstanceId,
     ) -> Result<HostInputs, LayoutRefusal> {
+        let mut inputs = Self::inputs_for(vm);
+        // As the runtime layout does: the targets the request holds the network card to.
+        inputs.targets = request.required.targets.clone();
         Ok(HostInputs {
-            inputs: Self::inputs_for(vm),
+            inputs,
             guest_image: guest_image(),
         })
     }
@@ -862,6 +866,7 @@ impl Harness {
             gpu: false,
             gpu_memory: Vec::new(),
             internet: false,
+            targets: None,
             owner_session: false,
             tenant: tenant(),
             resources: super::VmResources {

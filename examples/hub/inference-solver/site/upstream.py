@@ -7,6 +7,9 @@ import socket
 import ssl
 from urllib.parse import urlsplit
 
+# Where a model server's catalog entry may give the context it serves, in tokens.
+CONTEXT_FIELDS = ("context_length", "max_model_len", "context_window", "max_context_length")
+
 
 class UpstreamError(Exception):
     def __init__(self, message, status=503, code=""):
@@ -99,17 +102,20 @@ def connect(base, secret, path, payload=None, timeout=30, expect=(200,), method=
 
 
 def discover_catalog(base, secret):
-    """The server's models, each with what it says it enforces: (name, {"json": True|False|None}),
-    sorted by name. Yougori's model server lists capabilities.structuredOutput; a server that
-    lists nothing leaves it unknown (None)."""
+    """The server's models, each with what it says it enforces, its task and its context: (name,
+    {"json": True|False|None, "task": str|None, "context": int|None}), sorted by name. Yougori's model server lists capabilities.structuredOutput; a server that
+    lists nothing leaves it unknown (None). A server that lists no models, as one whose model has
+    not started yet, is told so, not that its catalog is invalid."""
     conn, response = connect(base, secret, "/models", timeout=5)
     try:
         raw = response.read(1024 * 1024 + 1)
         if len(raw) > 1024 * 1024:
             raise ValueError()
         data = json.loads(raw)["data"]
-        if not isinstance(data, list) or not 1 <= len(data) <= 100:
+        if not isinstance(data, list) or len(data) > 100:
             raise ValueError()
+        if not data:
+            raise UpstreamError("The server lists no models right now.", 502)
         catalog = {}
         for item in data:
             name = item["id"]
@@ -119,8 +125,12 @@ def discover_catalog(base, secret):
             enforced = capabilities.get("structuredOutput") if isinstance(capabilities, dict) else None
             # The kind of model (text-generation, or a media task) as Yougori's model server lists it.
             task = item.get("task") if isinstance(item, dict) else None
+            # The context it serves, where the server lists it: vLLM's max_model_len, or the
+            # context_length another inference (and OpenRouter-style catalogs) list.
+            context = next((value for value in map(item.get, CONTEXT_FIELDS) if type(value) is int and 256 <= value <= 1048576), None)
             catalog[name] = {"json": enforced if isinstance(enforced, bool) else None,
-                             "task": task if isinstance(task, str) and re.fullmatch(r"[a-z][a-z-]{0,39}", task) else None}
+                             "task": task if isinstance(task, str) and re.fullmatch(r"[a-z][a-z-]{0,39}", task) else None,
+                             "context": context}
         return sorted(catalog.items())
     except (ValueError, KeyError, TypeError, OSError, http.client.HTTPException):
         raise UpstreamError("The server did not return a valid model catalog.", 502) from None

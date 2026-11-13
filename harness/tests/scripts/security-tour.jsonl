@@ -1,0 +1,30 @@
+// A security harness's tour: findings, a saved report and progress.
+// cargo run -- --script tests/scripts/security-tour.jsonl --spec tests/scripts/security.json
+{"type":"ready","harness":"strix","name":"Strix","model":"unsloth/gemma-4-26B-A4B-it-GGUF","models":["unsloth/gemma-4-26B-A4B-it-GGUF","qwen3-coder-30b"],"model_switch":"live","info":"Strix 0.4 · 3 agents · tests only shop.example.test"}
+{"type":"commands","commands":[{"name":"new","description":"Start a new assessment"},{"name":"report","description":"Write the report now"}]}
+{"type":"usage","context_tokens":2400,"context_window":32768}
+{"type":"turn"}
+{"type":"plan","entries":[{"content":"Map the site and its services","status":"in_progress"},{"content":"Scan for known weaknesses","status":"pending"},{"content":"Test the findings safely","status":"pending"},{"content":"Write the report","status":"pending"}]}
+{"type":"message","message":"m1","text":"Starting with the open ports and the pages the site links to."}
+{"type":"progress","id":"ports","label":"Port scan","done":0,"total":1000,"unit":"steps"}
+{"type":"tool_call","id":"t1","title":"nmap -sV shop.example.test","kind":"execute","status":"in_progress","content":[{"type":"terminal","command":"nmap -sV shop.example.test","output":"Starting Nmap 7.95\n"}]}
+{"type":"progress","id":"ports","label":"Port scan","done":400,"total":1000,"unit":"steps"}
+{"type":"progress","id":"ports","label":"Port scan","done":1000,"total":1000,"unit":"steps","finished":true}
+{"type":"tool_update","id":"t1","status":"completed","content":[{"type":"terminal","command":"nmap -sV shop.example.test","output":"Starting Nmap 7.95\nPORT    STATE SERVICE  VERSION\n22/tcp  open  ssh      OpenSSH 9.6\n80/tcp  open  http     nginx 1.24.0\n443/tcp open  ssl/http nginx 1.24.0\nNmap done: 1 IP address (1 host up)","exit_code":0}]}
+{"type":"progress","id":"crawl","label":"Crawling the site","done":12,"unit":"pages"}
+{"type":"progress","id":"crawl","label":"Crawling the site","done":48,"unit":"pages","finished":true}
+{"type":"plan","entries":[{"content":"Map the site and its services","status":"completed"},{"content":"Scan for known weaknesses","status":"in_progress"},{"content":"Test the findings safely","status":"pending"},{"content":"Write the report","status":"pending"}]}
+{"type":"finding","id":"f1","title":"SQL injection in the search","severity":"high","target":"https://shop.example.test/search?q=","description":"The q parameter reaches the SQL query unescaped: a single quote changes the result count.","evidence":"GET /search?q=shoe' OR '1'='1 -> 200, 412 results (normally 12)","details":{"cwe":"CWE-89","cvss":8.6}}
+{"type":"finding","id":"f2","title":"No rate limit on the login form","severity":"medium","target":"https://shop.example.test/login","description":"Two hundred wrong passwords in a minute were all answered."}
+{"type":"finding","id":"f3","title":"Server version in the headers","severity":"low","target":"https://shop.example.test/","description":"The Server header names nginx 1.24.0."}
+{"type":"finding","id":"f4","title":"robots.txt lists /admin","severity":"info","target":"https://shop.example.test/robots.txt"}
+{"type":"permission","id":"p1","title":"Confirm the SQL injection with sqlmap","detail":"sqlmap --url https://shop.example.test/search?q=shoe --level 1 --risk 1 --technique B\nRead-only checks; nothing is written to the database.","options":[{"id":"allow_once","label":"Allow once","kind":"allow_once"},{"id":"allow_always","label":"Always allow sqlmap","kind":"allow_always"},{"id":"reject_once","label":"Reject","kind":"reject_once"},{"id":"reject_always","label":"Never run sqlmap","kind":"reject_always"}]}
+{"type":"tool_call","id":"t2","title":"sqlmap --url https://shop.example.test/search?q=shoe --technique B","kind":"execute","status":"completed","content":[{"type":"terminal","output":"[INFO] GET parameter 'q' is 'AND boolean-based blind' injectable\n[INFO] the back-end DBMS is PostgreSQL","exit_code":0}]}
+{"type":"finding","id":"f5","title":"Admin panel reachable without login","severity":"critical","target":"https://shop.example.test/admin","description":"The admin dashboard answers 200 without a session and lists the orders.","evidence":"GET /admin -> 200 (Orders: 1,204)"}
+{"type":"progress","id":"wordlist","label":"Downloading the wordlist","done":1258291,"total":5242880,"unit":"bytes"}
+{"type":"progress","id":"wordlist","label":"Downloading the wordlist","done":5242880,"total":5242880,"unit":"bytes","finished":true}
+{"type":"plan","entries":[{"content":"Map the site and its services","status":"completed"},{"content":"Scan for known weaknesses","status":"completed"},{"content":"Test the findings safely","status":"completed"},{"content":"Write the report","status":"completed"}]}
+{"type":"report","title":"Assessment report","path":"reports/strix-shop.example.test.md","summary":"5 findings: 1 critical, 1 high, 1 medium, 1 low, 1 info. The admin panel and the search need fixing first."}
+{"type":"message","message":"m2","text":"Done. **Fix first:** the open admin panel, then the SQL injection in the search. The report has the steps to reproduce each finding."}
+{"type":"usage","context_tokens":21000,"context_window":32768}
+{"type":"turn_end","reason":"end_turn"}

@@ -1,8 +1,10 @@
 """Publisher artifact import preserves each harness's VM filesystem budget."""
+import base64
 import hashlib
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 import io
 import json
+import os
 from pathlib import Path
 import sys
 import tempfile
@@ -84,6 +86,111 @@ class LaunchChoices(unittest.TestCase):
             with self.assertRaises(ValueError):
                 solver.vm_size(cpu, memory)
         self.assertNotIn('off', solver.INTERNET)  # the VM always reaches the inference
+
+
+class LeftoverVms(unittest.TestCase):
+    """A run leaves no VM in the app's list, only a copy with the harness's changes to review."""
+
+    def engine(self, changes=(), stopped=(), missing=False):
+        calls = []
+
+        def call(action, **params):
+            calls.append((action, params.get('op'), params.get('sandbox')))
+            if action == 'status':
+                return {'sandboxes': [{'sandbox': s, 'state': 'stopped'} for s in stopped]}
+            if missing and params.get('op') in ('show', 'discard'):
+                raise ValueError('Sandbox ' + params['sandbox'] + ' has no workspace.')
+            if params.get('op') == 'show':
+                return {'changes': [{'name': name, 'change': change} for name, change in changes]}
+            return {'discarded': True}
+        return calls, patch.object(vm_host, 'call', call)
+
+    def test_a_copy_goes_unless_the_harness_changed_the_project(self):
+        vm = 'exe-' + 'a' * 32
+        calls, engine = self.engine()
+        with engine:
+            self.assertFalse(vm_host.tidy(vm, None))  # Yougori's own empty copy: no project folder
+        self.assertEqual(calls, [('workspace', 'discard', vm)])
+        calls, engine = self.engine(changes=[('yougori.py', 'added'), ('.agents/skills/yougori-setup/SKILL.md', 'added')])
+        with engine:
+            self.assertFalse(vm_host.tidy(vm, 'C:/work/app'))  # only the setup package was added
+        self.assertEqual(calls[-1], ('workspace', 'discard', vm))
+        for change in (('src/app.py', 'modified'), ('yougori.py', 'modified'), ('notes.md', 'added'), ('old.txt', 'deleted')):
+            calls, engine = self.engine(changes=[change])
+            with engine:
+                self.assertTrue(vm_host.tidy(vm, 'C:/work/app'), change)
+            self.assertNotIn('discard', [op for _, op, _ in calls])
+        calls, engine = self.engine(missing=True)
+        with engine:
+            self.assertFalse(vm_host.tidy(vm, None))  # already gone
+
+    def test_earlier_runs_that_ended_without_tidying_are_tidied_once_stopped(self):
+        stopped, running = 'exe-' + 'b' * 32, 'exe-' + 'c' * 32
+        with tempfile.TemporaryDirectory() as folder:
+            root = Path(folder)
+            vm_host.remembered(root, lambda known: [{'sandbox': stopped, 'workspace': None}, {'sandbox': running, 'workspace': None}])
+            calls, engine = self.engine(stopped=[stopped])
+            with engine:
+                vm_host.tidy_earlier(root)
+            self.assertIn(('workspace', 'discard', stopped), calls)
+            self.assertNotIn(('workspace', 'discard', running), calls)
+            self.assertEqual([item['sandbox'] for item in vm_host.remembered(root)], [running])  # another terminal's VM
+
+
+class Console:
+    """A Windows console's input: each part is there at once, the next arrives after a pause."""
+
+    def __init__(self, *parts):
+        # getwch gives UTF-16 code units: a character beyond U+FFFF is two of them.
+        units = (part.encode('utf-16-le', 'surrogatepass') for part in parts)
+        self.parts = [[chr(int.from_bytes(raw[i:i + 2], 'little')) for i in range(0, len(raw), 2)] for raw in units]
+
+    def kbhit(self):
+        if self.parts and not self.parts[0]:
+            self.parts.pop(0)
+            return False  # the next part is still on its way
+        return bool(self.parts)
+
+    def getwch(self):
+        return self.parts[0].pop(0)
+
+
+class TerminalInput(unittest.TestCase):
+    """A terminal's answers reach the harness whole, so it never shows them as typed text."""
+
+    def test_an_answer_arriving_in_pieces_is_sent_whole(self):
+        done = threading.Event()
+        answer = '\x1b]11;rgb:0c0c/0c0c/0c0c\x1b\\\x1b[?1016;2$y\x1b[?2027;2$y\x1b[1;1R\x1b[4;1040;1790t'
+        self.assertEqual(vm_host.console_input(Console(answer[:30], answer[30:]), done), answer)
+        # Typing is not held back: without an escape sequence the pause ends what is sent.
+        console = Console('hi', ' there')
+        self.assertEqual(vm_host.console_input(console, done), 'hi')
+        self.assertEqual(vm_host.console_input(console, done), ' there')
+
+    def test_keys_wide_characters_and_the_detach_key(self):
+        done = threading.Event()
+        self.assertEqual(vm_host.console_input(Console('\xe0H\xe0P\x00S'), done), '\x1b[A\x1b[B\x1b[3~')
+        self.assertEqual(vm_host.console_input(Console('ok 😀'), done), 'ok \U0001F600')  # comes as two halves
+        self.assertIsNone(vm_host.console_input(Console('ab\x1d'), done))
+        # A paste larger than one request is sent in requests the VM accepts.
+        paste = Console('€' * 9000)
+        sizes = [len(vm_host.console_input(paste, done).encode()) for _ in range(3)]
+        self.assertEqual(sum(sizes), 27000)
+        self.assertLessEqual(max(sizes), 16384)
+
+    @unittest.skipUnless(os.name == 'nt', 'the Windows console')
+    def test_one_request_carries_an_answer(self):
+        posts, done = [], threading.Event()
+
+        class Control:
+            def post(self, path, body):
+                posts.append(base64.b64decode(body['data']).decode())
+                done.set()
+                return {}
+        answer = '\x1b[?1016;2$y\x1b[?2004;2$y'
+        with patch.dict(sys.modules, {'msvcrt': Console(answer)}):
+            vm_host.terminal_input(Control(), done)
+        self.assertEqual(posts, [answer])
 
 
 if __name__ == '__main__': unittest.main()

@@ -7,7 +7,7 @@ fn an_acknowledged_end_releases_its_parent_and_child_without_options_or_a_marker
     let before = sample(GIB);
     let (_, mut account) = world(&before);
     account
-        .settle_and_admit(&before, "deleted", Some(transformers(8 * GIB)))
+        .settle_and_admit(&before, "deleted", Some(transformers(8 * GIB)), None)
         .unwrap();
     let receipt = account.capture_end("deleted").unwrap();
     account.confirm_end(receipt);
@@ -32,7 +32,7 @@ fn capture_and_a_failed_or_cancelled_runtime_end_release_nothing() {
     let s = sample(GIB);
     let (_, mut account) = world(&s);
     account
-        .settle_and_admit(&s, "model", Some(transformers(8 * GIB)))
+        .settle_and_admit(&s, "model", Some(transformers(8 * GIB)), None)
         .unwrap();
     drop(account.capture_end("model"));
     account.reconcile_ends(&sample(GIB)).unwrap();
@@ -48,11 +48,11 @@ fn a_receipt_cannot_release_a_replacement_grant_for_the_same_environment() {
     let s = sample(GIB);
     let (_, mut account) = world(&s);
     account
-        .settle_and_admit(&s, "model", Some(transformers(8 * GIB)))
+        .settle_and_admit(&s, "model", Some(transformers(8 * GIB)), None)
         .unwrap();
     let old = account.capture_end("model").unwrap();
     account
-        .settle_and_admit(&sample(GIB), "model", Some(transformers(9 * GIB)))
+        .settle_and_admit(&sample(GIB), "model", Some(transformers(9 * GIB)), None)
         .unwrap();
     let replacement = GrantIdentity::of(&account.grants["model"]);
     assert_ne!(old.identity, replacement);
@@ -67,11 +67,11 @@ fn queued_old_receipts_are_discarded_after_another_path_replaces_the_grant() {
     let s = sample(GIB);
     let (_, mut account) = world(&s);
     account
-        .settle_and_admit(&s, "model", Some(transformers(8 * GIB)))
+        .settle_and_admit(&s, "model", Some(transformers(8 * GIB)), None)
         .unwrap();
     account.confirm_end(account.capture_end("model").unwrap());
     account
-        .settle_and_admit(&sample(GIB), "model", Some(transformers(9 * GIB)))
+        .settle_and_admit(&sample(GIB), "model", Some(transformers(9 * GIB)), None)
         .unwrap();
     let replacement = GrantIdentity::of(&account.grants["model"]);
     account.reconcile_ends(&sample(GIB)).unwrap();
@@ -83,7 +83,7 @@ fn a_fresh_matching_host_probe_is_required_and_failure_retains_the_receipt() {
     let s = sample(GIB);
     let (_, mut account) = world(&s);
     account
-        .settle_and_admit(&s, "model", Some(transformers(8 * GIB)))
+        .settle_and_admit(&s, "model", Some(transformers(8 * GIB)), None)
         .unwrap();
     account.confirm_end(account.capture_end("model").unwrap());
     let mut stale = sample(GIB);
@@ -103,7 +103,7 @@ fn silent_or_paused_neighbours_keep_their_grants_and_outside_memory_stays_charge
     let before = sample(GIB);
     let (_, mut account) = world(&before);
     account
-        .settle_and_admit(&before, "neighbour", Some(transformers(8 * GIB)))
+        .settle_and_admit(&before, "neighbour", Some(transformers(8 * GIB)), None)
         .unwrap();
     account
         .settle_and_coadmit(

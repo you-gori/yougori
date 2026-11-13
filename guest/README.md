@@ -8,8 +8,11 @@ Plan: docs/combined-gpu-memory-and-vm-sandbox-plan.md §3.2, §3.3, §8.3, §11.
 
 Networking is off by default. The desktop's **Full internet access** switch (CLI:
 `yougori sandbox launch --internet true --yes`) explicitly adds an outbound QEMU user-NAT
-adapter. It supports IPv4 TCP/UDP and DNS, including reachable local-network services;
-it does not provide IPv6, general ICMP, inbound forwarding or host-file access.
+adapter. It supports IPv4 TCP/UDP and DNS to the public internet only: the host's network
+filter (`src-tauri/src/sandbox/qemu_host/network_filter.rs`) refuses this computer, its
+loopback services through the gateway, and private, shared, link-local, cloud management,
+reserved and multicast addresses. It does not provide IPv6, general ICMP, inbound
+forwarding or host-file access.
 The host verifies the exact adapter, backend and public boot-mode arguments against
 the opted-in profile. Offline launches still reject network devices.
 

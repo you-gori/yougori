@@ -140,6 +140,20 @@ pub(super) fn observation(health: &Value) -> Result<Observation, Failure> {
     })
 }
 
+/// A vLLM runner parked by sleep, with requests of its own waiting, whose runner ends the parked
+/// engine on an unload even then (`endsParkedWhileWaiting`, gpu_optimizer.py `gpu_unload`): the
+/// requests stay in line and its next load starts the engine again, instead of its leftover
+/// keeping the model first in line refused while both wait. Older runners refuse that unload and
+/// are never asked.
+pub(super) fn ends_parked_while_waiting(health: &Value) -> bool {
+    let o = &health["optimizer"];
+    health["parked"] == "sleep"
+        && o["endsParkedWhileWaiting"] == true
+        && o["resident"] == false
+        && o["releaseUncertain"] == false
+        && o["active"] == 0
+}
+
 fn applicable(action: Action, health: &Value, observed: &Observation) -> Result<(), Failure> {
     if *observed == Observation::Legacy {
         return Ok(());
@@ -165,7 +179,7 @@ fn applicable(action: Action, health: &Value, observed: &Observation) -> Result<
                 && o["pinned"] == false
                 && o["loading"] == false
                 && o["active"] == 0
-                && o["pending"] == 0
+                && (o["pending"] == 0 || ends_parked_while_waiting(health))
         }
         // A resident model is trimmed, or grows back, while serving; what it holds decides
         // how far.
@@ -245,7 +259,10 @@ pub(super) fn configuration_acknowledged(health: &Value, answer: &Value) -> bool
         && answer["controlAck"]["sequence"].as_u64() == Some(expected)
 }
 
-fn acknowledged(action: Action, before: &Observation, answer: &Value) -> Result<(), Failure> {
+/// `waiting`: the unload was sent to a runner whose parked engine it ends while its own requests
+/// wait ([`ends_parked_while_waiting`]), so the answer may still count them; its answer no longer
+/// says it was parked.
+fn acknowledged(action: Action, before: &Observation, answer: &Value, waiting: bool) -> Result<(), Failure> {
     match before {
         Observation::Legacy => {
             // A runner upgraded/restarted after observation must be rediscovered
@@ -290,7 +307,7 @@ fn acknowledged(action: Action, before: &Observation, answer: &Value) -> Result<
                         || o["loading"] != false
                         || o["releaseUncertain"] != false
                         || o["active"] != 0
-                        || o["pending"] != 0
+                        || (o["pending"] != 0 && !waiting)
                         || o["enabled"] != true =>
                 {
                     return Err(Failure::Rejected)
@@ -359,7 +376,8 @@ where
     if shutdown.is_cancelled() {
         return Err(Failure::Cancelled);
     }
-    acknowledged(action, &observed, &answer)?;
+    let waiting = action == Action::Unload && ends_parked_while_waiting(health);
+    acknowledged(action, &observed, &answer, waiting)?;
     Ok(answer)
 }
 

@@ -101,9 +101,9 @@ pub use facets::{
     CredentialKind, DeviceExposure, DeviceInventory, EndpointError, EndpointKind,
     EvidenceRequirement, Facet,
     GpuIsolation, GpuIsolationCheck, GuestEgressEndpoint, IsolationObservation,
-    IsolationRequirement, NetworkAuthority, NetworkChannel, ObservedGpu, OperatorConfidentiality,
-    PerimeterRequirement, Persistence, PhysicalHost, RequiredProperties, UnsafeDeviceSetting,
-    MAX_GUEST_EGRESS_ENDPOINTS,
+    IsolationRequirement, NetworkAuthority, NetworkChannel, NetworkTarget, ObservedGpu,
+    OperatorConfidentiality, PerimeterRequirement, Persistence, PhysicalHost, RequiredProperties,
+    UnsafeDeviceSetting, MAX_GUEST_EGRESS_ENDPOINTS, MAX_NETWORK_TARGETS,
 };
 pub use fake::{FakeBackend, FakeCall, GuestScript, HostScript, Scripted};
 pub use matrix::{

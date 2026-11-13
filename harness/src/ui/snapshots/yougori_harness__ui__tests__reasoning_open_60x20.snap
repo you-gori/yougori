@@ -1,0 +1,25 @@
+---
+source: src/ui/tests.rs
+expression: narrow
+---
+
+  ▀▄ ▄▀ ▄▀▀▄ █  █ ▄▀▀▀ ▄▀▀▄ █▀▀▄ ▀█▀
+    █   █  █ █  █ █ ▀█ █  █ █▀█   █     OpenCode  v1.0.0
+    ▀    ▀▀   ▀▀   ▀▀▀  ▀▀  ▀  ▀ ▀▀▀    qwen3-coder-30b
+
+  OpenCode 1.0 · build mode
+
+› Why does the build fail?
+
+  ▾ Thinking · 19 words
+  │ The error mentions a missing feature flag. Cargo.toml
+  │ enables tokio without the macros feature, so
+  │ #[tokio::main] is not found.
+
+  tokio is missing its macros feature.
+
+╭──────────────────────────────────────────────────────────╮
+│ › Ask OpenCode anything                                  │
+╰──────────────────────────────────────────────────────────╯
+ OpenCode · qwen3-coder-30b · 10% context · Build
+[cursor 4,17]

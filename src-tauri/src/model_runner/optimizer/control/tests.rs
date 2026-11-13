@@ -189,6 +189,49 @@ async fn a_grow_is_fenced_to_a_resident_runner_and_needs_its_own_acknowledgement
     }
 }
 
+#[tokio::test]
+async fn a_parked_engine_is_unloaded_while_its_requests_wait_only_where_the_runner_says_it_can() {
+    // A vLLM runner parked by sleep, with two requests of its own waiting for the GPU.
+    let mut parked = health('d', 30, false, 2);
+    parked["parked"] = json!("sleep");
+    let shutdown = CancellationToken::new();
+    let sent = Arc::new(Mutex::new(0));
+    let unloaded = |pending: u64| {
+        let sent = sent.clone();
+        move |_: String, body: Value| {
+            *sent.lock().unwrap() += 1;
+            // Its engine ended: no longer parked, its requests still waiting.
+            let mut h = health('d', 31, false, pending);
+            h["optimizer"]["endsParkedWhileWaiting"] = json!(true);
+            h["unloaded"] = json!(true);
+            h["controlAck"] = json!({"action": "unload", "instanceId": body["expectedInstanceId"],
+                "expectedSequence": body["expectedSequence"], "sequence": 31});
+            async move { Ok::<Value, String>(h) }
+        }
+    };
+    // An older runner refuses that unload, so it is never asked.
+    assert_eq!(request("old", Action::Unload, &parked, &shutdown, TIMEOUT, &unloaded(2)).await.unwrap_err(), Failure::Rejected);
+    assert_eq!(*sent.lock().unwrap(), 0);
+    parked["optimizer"]["endsParkedWhileWaiting"] = json!(true);
+    let answer = request("new", Action::Unload, &parked, &shutdown, TIMEOUT, &unloaded(2)).await.unwrap();
+    assert_eq!((answer["optimizer"]["pending"].as_u64(), *sent.lock().unwrap()), (Some(2), 1));
+    // Never while it serves, loads, is pinned or holds a model, nor a runner that is not parked.
+    for (field, value) in [("active", json!(1)), ("loading", json!(true)), ("pinned", json!(true)), ("resident", json!(true)), ("releaseUncertain", json!(true))] {
+        let mut busy = parked.clone();
+        busy["optimizer"][field] = value;
+        assert_eq!(request("new", Action::Unload, &busy, &shutdown, TIMEOUT, &unloaded(2)).await.unwrap_err(), Failure::Rejected, "{field}");
+    }
+    let mut awake = parked.clone();
+    awake.as_object_mut().unwrap().remove("parked");
+    assert_eq!(request("new", Action::Unload, &awake, &shutdown, TIMEOUT, &unloaded(2)).await.unwrap_err(), Failure::Rejected);
+    assert_eq!(*sent.lock().unwrap(), 1);
+    // An idle runner's unload is still acknowledged only with no request waiting.
+    let mut idle = health('d', 30, false, 0);
+    idle["optimizer"]["endsParkedWhileWaiting"] = json!(true);
+    assert_eq!(request("idle", Action::Unload, &idle, &shutdown, TIMEOUT, &unloaded(1)).await.unwrap_err(), Failure::Rejected);
+    assert!(request("idle", Action::Unload, &idle, &shutdown, TIMEOUT, &unloaded(0)).await.is_ok());
+}
+
 #[test]
 fn malformed_advertised_protocol_never_becomes_legacy() {
     assert_eq!(

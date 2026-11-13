@@ -13,7 +13,9 @@ fn helpers() -> Vec<(&'static str, String, Vec<u8>)> {
         (
             "YOUGORI_MODEL_SERVER_SOURCE",
             server_payload(),
-            include_bytes!("../model_server.py").to_vec(),
+            // The model server travels without its comment-only lines (server_payload).
+            super::without_comment_lines(&include_str!("../model_server.py").replace("\r\n", "\n"))
+                .into_bytes(),
         ),
         (
             "YOUGORI_GPU_SOURCE",
@@ -42,8 +44,8 @@ fn helpers() -> Vec<(&'static str, String, Vec<u8>)> {
         (
             "YOUGORI_BACKENDS_SOURCE",
             backends_source(),
-            include_str!("engine_backends.py")
-                .replace("\r\n", "\n")
+            // The engine backends travel without their comment-only lines too (backends_text).
+            super::without_comment_lines(&include_str!("engine_backends.py").replace("\r\n", "\n"))
                 .into_bytes(),
         ),
         (
@@ -231,8 +233,7 @@ fn remote_file_bundle_preserves_sources_and_fits_its_distinct_transport_limit() 
         ),
         (
             "__YOUGORI_BACKENDS_SOURCE__",
-            include_str!("engine_backends.py")
-                .replace("\r\n", "\n")
+            super::without_comment_lines(&include_str!("engine_backends.py").replace("\r\n", "\n"))
                 .into_bytes(),
         ),
         (
@@ -252,5 +253,6 @@ fn remote_file_bundle_preserves_sources_and_fits_its_distinct_transport_limit() 
             .unwrap();
         assert_eq!(unpack(encoded), expected, "changed remote helper {name}");
     }
-    assert_eq!(parts.next().unwrap(), include_str!("../model_server.py"));
+    // The model server less its comment-only lines, as a local start sends it (server_payload).
+    assert_eq!(parts.next().unwrap(), super::without_comment_lines(&include_str!("../model_server.py").replace("\r\n", "\n")));
 }

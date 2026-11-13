@@ -37,6 +37,56 @@ pub(crate) fn mark_for_start(options: &mut yougori_cli::workload::Options) {
 pub(crate) fn marked_for_start(options: &yougori_cli::workload::Options) -> bool {
     options.environment.contains_key(START_MARK)
 }
+
+/// Marks agent limits saved since the container was configured: the next start that refreshes the
+/// model server carries them into it and removes this mark with [`START_MARK`]. Other settings
+/// share the start mark, so only this one says whether the running container lacks the limits.
+const AGENT_API_PENDING: &str = "YOUGORI_AGENT_API_PENDING";
+
+/// The limits coding agents need (`YOUGORI_MODEL_AGENT_API`: longer conversations, more messages,
+/// larger requests) saved for the model's next start. Whether anything changed.
+fn set_agent_api(options: &mut yougori_cli::workload::Options) -> bool {
+    if options.environment.get("YOUGORI_MODEL_AGENT_API").map(String::as_str) == Some("1") {
+        return false;
+    }
+    options.environment.insert("YOUGORI_MODEL_AGENT_API".into(), "1".into());
+    options.environment.insert(AGENT_API_PENDING.into(), "1".into());
+    mark_for_start(options);
+    true
+}
+
+/// Whether a model in `status` must be stopped and started again to run with the agent limits saved
+/// in `options`: they were saved after its container was configured, and it is not stopped (a start
+/// from stopped refreshes it; a paused or failed model resumes without that refresh).
+fn agent_api_needs_restart(status: &EnvironmentStatus, options: &yougori_cli::workload::Options) -> bool {
+    !matches!(status, EnvironmentStatus::Stopped | EnvironmentStatus::Provisioning) && options.environment.contains_key(AGENT_API_PENDING)
+}
+
+/// `model_agent_api`: gives a model on this computer the agent limits from its next start, for a
+/// model a person shares with an inference website's coding agents (`yougori inference connect`).
+/// Only the same-user CLI reaches it (it is no window command). `restartRequired` says the model
+/// runs now without them; Swarm's workers set the flag at install and are unaffected.
+pub(crate) async fn give_agent_api(environment_id: String, app: AppHandle) -> Result<Value, String> {
+    let state = app.state::<PlatformStore>().snapshot()?;
+    let env = state.environments.iter().find(|env| env.id == environment_id).ok_or("Model environment not found")?;
+    if env.kind != EnvironmentKind::Container {
+        return Err("Only a model running on this computer takes the agent limits.".into());
+    }
+    let id = env.runtime_id.clone().unwrap_or_else(|| environment_id.clone());
+    let runtime = app.state::<RuntimeManager>();
+    let mut options = runtime.workload_options(&id)?;
+    if !options.environment.contains_key("YOUGORI_MODEL")
+        || matches!(options.environment.get("YOUGORI_MODEL_FORMAT").map(String::as_str), Some("media" | "source")) {
+        return Err("Only a chat model takes the agent limits.".into());
+    }
+    let changed = set_agent_api(&mut options);
+    if changed {
+        runtime.save_workload_options(&id, &options)?;
+    }
+    // Saved limits reach the container only at a start that refreshes it (their mark is still set),
+    // also when an earlier call saved them and the restart that should have followed failed.
+    Ok(json!({"agentApi": true, "changed": changed, "restartRequired": agent_api_needs_restart(&env.status, &options)}))
+}
 const ADMIN_PATHS: [&str; 6] = ["/v1/listen/config", "/v1/usage/reset", "/v1/yougori/publishing", "/v1/yougori/adapters", "/v1/yougori/kv", "/v1/yougori/media"];
 fn timing_diagnostics(path: &str) -> bool {
     matches!(path.split('?').next(), Some("/v1/diagnostics/timings" | "/v1/diagnostics/load"))
@@ -442,7 +492,14 @@ async fn run_model_at_revision(model: String, port: Option<u16>, resources: Opti
         environment["YOUGORI_MODEL_QUANT"] = compatibility["quant"].clone();
         environment["YOUGORI_MODEL_FILES"] = json!(compatibility["files"].to_string());
     }
-    if vllm { environment["YOUGORI_MODEL_FORMAT"] = json!("vllm"); }
+    if vllm {
+        environment["YOUGORI_MODEL_FORMAT"] = json!("vllm");
+        // Agents (coding harnesses through an inference website, Swarm workers) send tools: vLLM
+        // parses the calls in the model family's own format, as on a rented GPU. Chat is unchanged.
+        if let Some(parser) = neocloud::tool_parser(&model, &compatibility["architectures"]) {
+            environment["YOUGORI_TOOL_PARSER"] = json!(parser);
+        }
+    }
     if media {
         environment["YOUGORI_MODEL_FORMAT"] = json!("media");
         environment["YOUGORI_MEDIA_TASK"] = compatibility["task"].clone();
@@ -781,9 +838,29 @@ pub(crate) async fn release_model_catalog(options: yougori_cli::workload::Option
         .map_err(|error| error.to_string())?
 }
 /// The container command that runs this version's model server.
+/// `source` without its lines that are only a comment, outside triple-quoted strings: the same
+/// program (its parse tree is unchanged; model-server.test.py checks the rule on the real file),
+/// sent in fewer bytes. Every source a model start injects travels in one workload request, which
+/// the CUDA runtime's agent takes up to 128 KiB, and the model server's comments had filled it.
+fn without_comment_lines(source: &str) -> String {
+    let mut kept = Vec::new();
+    let mut inside: Option<&str> = None;
+    for line in source.split('\n') {
+        if inside.is_none() && line.trim().starts_with('#') {
+            continue;
+        }
+        kept.push(line);
+        for quote in ["\"\"\"", "'''"] {
+            if (inside.is_none() || inside == Some(quote)) && line.matches(quote).count() % 2 == 1 {
+                inside = if inside.is_none() { Some(quote) } else { None };
+            }
+        }
+    }
+    kept.join("\n")
+}
 fn server_payload() -> String {
     let mut compressed = flate2::write::ZlibEncoder::new(Vec::new(), flate2::Compression::best());
-    std::io::Write::write_all(&mut compressed, include_bytes!("model_server.py"))
+    std::io::Write::write_all(&mut compressed, without_comment_lines(&include_str!("model_server.py").replace("\r\n", "\n")).as_bytes())
         .expect("writing the embedded model server to memory");
     STANDARD.encode(compressed.finish().expect("compressing the embedded model server"))
 }
@@ -819,8 +896,15 @@ fn registry_source() -> String {
 /// digest it ships (`BACKENDS_SHA256`), so its own source stays under the guest's 64 KiB variable.
 fn backends_source() -> String {
     let mut source=flate2::write::ZlibEncoder::new(Vec::new(),flate2::Compression::best());
-    std::io::Write::write_all(&mut source,include_str!("model_runner/engine_backends.py").replace("\r\n","\n").as_bytes()).expect("compressing the engine backends");
+    std::io::Write::write_all(&mut source,backends_text().as_bytes()).expect("compressing the engine backends");
     STANDARD.encode(source.finish().expect("finishing the engine backends"))
+}
+/// `engine_backends.py` as a runner receives it: LF and without its comment-only lines, as the
+/// model server travels (model-server.test.py checks the parse tree is unchanged); every source
+/// a start injects shares one 128 KiB request. `BACKENDS_SHA256` in model_server.py pins these
+/// bytes, not the file's: after an edit, the digest test names the line to write.
+fn backends_text() -> String {
+    without_comment_lines(&include_str!("model_runner/engine_backends.py").replace("\r\n", "\n"))
 }
 /// Whether a runner of this format loads the engine backends: GGUF (llama.cpp) and vLLM.
 fn loads_backends(format: Option<&str>) -> bool {
@@ -835,8 +919,10 @@ fn megakernel_source() -> String {
     STANDARD.encode(source.finish().expect("finishing the megakernel host"))
 }
 /// Whether a runner of this format carries the megakernel host: vLLM, whose launch can be it.
-pub(crate) fn carries_megakernel(format: Option<&str>) -> bool {
-    format == Some("vllm")
+pub(crate) fn carries_megakernel(format: Option<&str>, launch: Option<&str>) -> bool {
+    // Only a vLLM runner whose launch is the megakernel reads it (megakernel_host_source): every
+    // source travels in one workload request, which the CUDA runtime's agent takes up to 128 KiB.
+    format == Some("vllm") && launch == Some("megakernel")
 }
 /// The media loaders and job runner (`model_runner/media_backends.py`, the media-backends
 /// helper): a media runner (Diffusers pipelines, text-to-speech) executes them before its load,
@@ -857,7 +943,7 @@ fn carry_server(environment: &mut Value) {
     if loads_backends(environment["YOUGORI_MODEL_FORMAT"].as_str()) {
         environment["YOUGORI_BACKENDS_SOURCE"] = json!(backends_source());
     }
-    if carries_megakernel(environment["YOUGORI_MODEL_FORMAT"].as_str()) {
+    if carries_megakernel(environment["YOUGORI_MODEL_FORMAT"].as_str(), environment["YOUGORI_MODEL_LAUNCH"].as_str()) {
         environment["YOUGORI_MEGAKERNEL_SOURCE"] = json!(megakernel_source());
     }
     if carries_media(environment["YOUGORI_MODEL_FORMAT"].as_str()) {
@@ -866,19 +952,107 @@ fn carry_server(environment: &mut Value) {
 }
 pub(crate) fn server_source() -> String {
     // The media backends are not in the pod bundle: a Neocloud pod runs no media model yet, and
-    // the bundle stays under the pod agent's 256 KiB file limit (packaging.rs checks it).
-    format!("__YOUGORI_GPU_SOURCE__ = '{}'\n__YOUGORI_CLEF_SOURCE__ = '{}'\n__YOUGORI_PUBLISHER_SOURCE__ = '{}'\n__YOUGORI_BACKENDS_SOURCE__ = '{}'\n__YOUGORI_MEGAKERNEL_SOURCE__ = '{}'\n{}", optimizer::source(), clef_source(), publisher_source(), backends_source(), megakernel_source(), include_str!("model_server.py"))
+    // the bundle stays under the pod agent's 256 KiB file limit (packaging.rs checks it). The model
+    // server goes without its comment-only lines, as in a local start: with them it outgrew that limit.
+    format!("__YOUGORI_GPU_SOURCE__ = '{}'\n__YOUGORI_CLEF_SOURCE__ = '{}'\n__YOUGORI_PUBLISHER_SOURCE__ = '{}'\n__YOUGORI_BACKENDS_SOURCE__ = '{}'\n__YOUGORI_MEGAKERNEL_SOURCE__ = '{}'\n{}", optimizer::source(), clef_source(), publisher_source(), backends_source(), megakernel_source(), without_comment_lines(&include_str!("model_server.py").replace("\r\n", "\n")))
 }
+/// What a model's start injects beside the sources its runner reads ([`optimizer::carry_sources`]):
+/// the publisher routes, the registry verifier for a model run from a folder and the Clef adapter
+/// for Clef. None of them is a secret.
+fn carry_start_sources(options: &mut yougori_cli::workload::Options) {
+    options.environment.insert("YOUGORI_PUBLISHER_SOURCE".into(), publisher_source());
+    if options.environment.contains_key("YOUGORI_MODEL_PATH") {
+        options.environment.insert("YOUGORI_REGISTRY_SOURCE".into(), registry_source());
+    }
+    if options.environment.get("YOUGORI_MODEL").is_some_and(|model| model == "Cloudflare/clef") {
+        options.environment.insert("YOUGORI_CLEF_SOURCE".into(), clef_source());
+    }
+}
+
+/// The most the agent of the CUDA runtime (and of the appliance) reads of one request
+/// (`decodeRequest` in appliance/agent/main.go); a model start sends all its options in one.
+const AGENT_REQUEST_BYTES: usize = 128 * 1024;
+
+/// About how large the configuration request of a start with `options` and `command` is, never
+/// less: the options as saved and the command, with room for what the request adds (the secrets
+/// resolved in place of their references, the environment's id and its resources).
+fn configuration_bytes(options: &yougori_cli::workload::Options, command: &str) -> usize {
+    let options = serde_json::to_vec(options).map_or(usize::MAX, |bytes| bytes.len());
+    let command = serde_json::to_string(command).map_or(usize::MAX, |text| text.len());
+    options.saturating_add(command).saturating_add(1024)
+}
+
+/// Why the agent would refuse the configuration request of a start with `options` and `command`,
+/// in words, or `None` when it fits. The agent itself says only "request body too large", after
+/// the options were saved. `name` is the model's, for the command that helps.
+fn request_refusal(options: &yougori_cli::workload::Options, command: &str, name: &str) -> Option<String> {
+    let needed = configuration_bytes(options, command);
+    if needed <= AGENT_REQUEST_BYTES {
+        return None;
+    }
+    let megakernel = options.environment.contains_key("YOUGORI_MODEL_PATH")
+        && options.environment.get("YOUGORI_MODEL_LAUNCH").is_some_and(|launch| launch == "megakernel");
+    let help = if megakernel {
+        format!(" A model run from a folder cannot use the megakernel launch yet: yougori model optimize {name} --launch speculative sets it back.")
+    } else {
+        String::new()
+    };
+    Some(format!("its settings and the sources its runner needs come to {} KB, more than the {} KB the CUDA runtime takes in one request.{help}",
+        needed.div_ceil(1024), AGENT_REQUEST_BYTES / 1024))
+}
+
+/// Why each model's last start kept the model server its container had, by environment id: the
+/// refresh before the start failed, and the start went on with the old server. Its status says so
+/// until a later start refreshes it.
+static NOT_REFRESHED: std::sync::Mutex<std::collections::BTreeMap<String, String>> = std::sync::Mutex::new(std::collections::BTreeMap::new());
+
+/// Keeps what `outcome`, a refresh of `environment_id`'s server, means for its status: a failure is
+/// shown until a refresh succeeds; a start that refreshed nothing changes nothing.
+fn note_refresh(environment_id: &str, outcome: &Result<bool, String>) {
+    let mut kept = NOT_REFRESHED.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+    match outcome {
+        Ok(true) => { kept.remove(environment_id); }
+        Ok(false) => {}
+        Err(error) => {
+            kept.insert(environment_id.to_owned(), format!("This model kept the model server it had before this start, because updating it failed: {error}"));
+        }
+    }
+}
+
+/// A model whose last start kept its old model server says why in its status, unless its runner
+/// reports an error of its own.
+fn with_refresh_failure(mut health: Value, failure: Option<String>) -> Value {
+    if let Some(failure) = failure.filter(|_| health.is_object() && health["error"].as_str().is_none_or(str::is_empty)) {
+        health["error"] = json!(failure);
+    }
+    health
+}
+
 /// Brings a stopped model environment's server up to this version before it starts, so reused
-/// environments get the same fixes as new ones. Only commands this runner wrote are replaced.
+/// environments get the same fixes as new ones. Only commands this runner wrote are replaced. A
+/// refresh that fails leaves the old server, which the caller starts; the model's status then says
+/// so ([`NOT_REFRESHED`]) instead of the old server running without a word.
 pub(crate) async fn refresh_server(
     environment_id: &str,
     store: &PlatformStore,
     runtime: &RuntimeManager,
 ) -> Result<(), String> {
+    let outcome = refresh_stopped_server(environment_id, store, runtime).await;
+    note_refresh(environment_id, &outcome);
+    outcome.map(|_| ())
+}
+
+/// [`refresh_server`]: `true` when nothing is left of an earlier failed refresh (the server was
+/// refreshed, or the environment is gone), `false` when there was nothing to refresh (it was not
+/// stopped, or runs a command of its own).
+async fn refresh_stopped_server(
+    environment_id: &str,
+    store: &PlatformStore,
+    runtime: &RuntimeManager,
+) -> Result<bool, String> {
     let state = store.snapshot()?;
     let Some(env) = state.environments.iter().find(|e| e.id == environment_id) else {
-        return Ok(());
+        return Ok(true);
     };
     // Environments from before models were named after themselves take the model's name.
     if let Some(model) = env.description.strip_prefix("Hugging Face · ") {
@@ -896,7 +1070,7 @@ pub(crate) async fn refresh_server(
     let current = env.container_command.as_deref().unwrap_or_default();
     let command = server_command();
     if env.status != EnvironmentStatus::Stopped || !is_server_command(current) {
-        return Ok(());
+        return Ok(false);
     }
     // Older model environments could reserve only 1 CPU/2 GiB. Upgrade their
     // floor before admission and scheduling, while preserving larger settings.
@@ -917,6 +1091,7 @@ pub(crate) async fn refresh_server(
     let old=options.clone();
     // Settings saved since the container was configured reach it through this start's change.
     options.environment.remove(START_MARK);
+    options.environment.remove(AGENT_API_PENDING);
     // A catalog environment (G04/S02): its execution's leases are renewed, or taken again
     // after a restart, and its read-only view completed before the start; the model bind
     // follows the view. A refusal is this start's error: the view is not served from the
@@ -924,16 +1099,12 @@ pub(crate) async fn refresh_server(
     options=tokio::task::spawn_blocking(move||catalog_binding::refresh_engine(&mut options).map(|_view|options).map_err(|error|error.to_string())).await.map_err(|e|e.to_string())??;
     optimizer::refresh_options(&mut options)?;
     ensure_admin_token(&mut options)?;
-    options.environment.insert("YOUGORI_PUBLISHER_SOURCE".into(),publisher_source());
-    if options.environment.contains_key("YOUGORI_MODEL_PATH") { options.environment.insert("YOUGORI_REGISTRY_SOURCE".into(),registry_source()); }
+    carry_start_sources(&mut options);
     // Keep already working, unquantized environments at their original precision.
     // New models choose automatically; the dedicated decision runners may need it.
     if !options.environment.contains_key("YOUGORI_MODEL_PRECISION") {
         let decision=options.environment.get("YOUGORI_MODEL").is_some_and(|model| matches!(model.as_str(), "Cloudflare/clef" | "superagent-ai/security-one-27b"));
         options.environment.insert("YOUGORI_MODEL_PRECISION".into(), if decision {"auto"} else {"original"}.into());
-    }
-    if options.environment.get("YOUGORI_MODEL").is_some_and(|model| model == "Cloudflare/clef") {
-        options.environment.insert("YOUGORI_CLEF_SOURCE".into(), clef_source());
     }
     if let Some(token) = huggingface::token() {
         crate::projects::secrets::store(huggingface::TOKEN_REFERENCE, &token)?;
@@ -970,6 +1141,7 @@ pub(crate) async fn refresh_server(
     };
     let previous = apply_served(&mut options, served.as_ref(), &mut command);
     if options!=old {
+        if let Some(refusal) = request_refusal(&options, &command, &env.name) { return Err(refusal); }
         runtime.save_workload_options(options_id,&options)?;
         if let Err(error)=runtime.update_workload_configuration(env).await{runtime.save_workload_options(options_id,&old)?;return Err(error)}
     }
@@ -982,10 +1154,10 @@ pub(crate) async fn refresh_server(
             eprintln!("Helper pins of the model runner {environment_id} were not recorded: {refusal}");
         }
     }
-    if current==command{return Ok(())}
+    if current==command{return Ok(true)}
     crate::commands::startup::update(environment_id, &command, store, runtime)
         .await
-        .map(|_| ())
+        .map(|_| true)
 }
 /// Puts what the rollout `served` into `options` (and the bundled model server into `command`):
 /// the served directory bound read-only at the helpers target in place of any earlier one, the
@@ -1315,7 +1487,8 @@ pub async fn model_status(environment_id: String, app: AppHandle) -> Result<Valu
     if let Some(reload) = optimizer::reload_cost(&environment_id) {
         health["reload"] = reload;
     }
-    Ok(with_waiting(health, optimizer::waiting_for(&environment_id)))
+    let not_refreshed = NOT_REFRESHED.lock().unwrap_or_else(std::sync::PoisonError::into_inner).get(&environment_id).cloned();
+    Ok(with_waiting(with_refresh_failure(health, not_refreshed), optimizer::waiting_for(&environment_id)))
 }
 
 /// A model waiting for the GPU says why, and only while it waits: queued, or phased to
@@ -1725,6 +1898,130 @@ pub fn model_chat_cancel(request_id: String) -> Result<(), String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    /// The options a start sends for a model of `format` (from a folder when `folder`), with the
+    /// sources [`refresh_server`] injects. Built from the sources alone: `refresh_options` would
+    /// store a new GPU control credential in this computer's vault for the fixture.
+    fn started_options(model: &str, format: &str, launch: Option<&str>, folder: bool) -> yougori_cli::workload::Options {
+        let mut options = yougori_cli::workload::Options::default();
+        for (name, value) in [("YOUGORI_MODEL", model), ("YOUGORI_MODEL_FORMAT", format), ("YOUGORI_MODEL_PRECISION", "original"),
+            ("HF_HOME", "/root/.cache/huggingface"), ("HF_HUB_DISABLE_TELEMETRY", "1"), ("YOUGORI_GPU_OPTIMIZER", "1"),
+            ("YOUGORI_GPU_IDLE_SECONDS", "300"), ("YOUGORI_MODEL_AGENT_API", "1"), ("YOUGORI_MODEL_PARALLEL", "4")] {
+            options.environment.insert(name.into(), value.into());
+        }
+        options.environment.insert("YOUGORI_MODEL_REVISION".into(), "a".repeat(40));
+        if let Some(launch) = launch {
+            options.environment.insert("YOUGORI_MODEL_LAUNCH".into(), launch.into());
+            options.environment.insert("YOUGORI_MODEL_RUNNER".into(), format!("hf:acme/fast-runner@{}", "0".repeat(40)));
+        }
+        if folder {
+            // A checkpoint of 16 shards, as the catalog view lists it for the runner.
+            let files = (1..=16).map(|i| json!({"name": format!("model-{i:05}-of-00016.safetensors"), "size": 4u64 << 30, "sha256": "f".repeat(64)})).collect::<Vec<_>>();
+            options.environment.insert("YOUGORI_MODEL_PATH".into(), "/yougori-model".into());
+            options.environment.insert("YOUGORI_LOCAL_MANIFEST".into(), json!({"files": files}).to_string());
+            options.binds.push(yougori_cli::workload::Volume { source: r"C:\Users\Someone\Models\A rather long folder name for a model".into(), target: "/yougori-model".into(), read_only: true });
+        }
+        for name in ["YOUGORI_MODEL_TOKEN", ADMIN_TOKEN, "YOUGORI_GPU_CONTROL_TOKEN", "HF_TOKEN"] {
+            options.secret_environment.insert(name.into(), format!("fixture-reference-{}", "0".repeat(32)));
+        }
+        optimizer::carry_sources(&mut options);
+        carry_start_sources(&mut options);
+        options
+    }
+    #[test]
+    fn the_sources_a_model_start_injects_fit_the_agents_limits() {
+        // A start's sources travel in one configuration request to the CUDA runtime's agent, which
+        // refuses a value over 64 KiB and a request over 128 KiB; a refused start kept the model's
+        // old server. Every runner kind, from Hugging Face and from a folder, each vLLM launch: it
+        // fits with room to spare, or that launch is refused when it is chosen.
+        let models = [("Qwen/Qwen3-4B", "vllm", None), ("Qwen/Qwen3-4B", "vllm", Some("speculative")), ("Qwen/Qwen3-4B", "vllm", Some("megakernel")),
+            ("Qwen/Qwen3-4B-GGUF", "gguf", None), ("Qwen/Qwen3-4B", "safetensors", None), ("Cloudflare/clef", "safetensors", None), ("acme/image", "media", None)];
+        let mut refused = Vec::new();
+        for folder in [false, true] {
+            for (model, format, launch) in models {
+                let options = started_options(model, format, launch, folder);
+                options.validate().unwrap_or_else(|error| panic!("{model} {format} {launch:?} folder {folder}: {error}"));
+                assert_eq!(options.environment.contains_key("YOUGORI_MEGAKERNEL_SOURCE"), launch == Some("megakernel"));
+                assert_eq!(options.environment.contains_key("YOUGORI_REGISTRY_SOURCE"), folder);
+                assert_eq!(options.environment.contains_key("YOUGORI_CLEF_SOURCE"), model == "Cloudflare/clef");
+                let bytes = configuration_bytes(&options, &server_command());
+                if launch.is_some_and(|launch| optimizer::launch_refusal(&EnvironmentKind::Container, &options.environment, launch).is_some()) {
+                    refused.push((format, launch, folder));
+                    continue;
+                }
+                // 2 KiB to spare for a longer folder manifest or more settings.
+                assert!(bytes + 2048 <= AGENT_REQUEST_BYTES, "{model} {format} {launch:?} folder {folder}: a {bytes}-byte request");
+                assert_eq!(request_refusal(&options, &server_command(), "model"), None);
+            }
+        }
+        // Only the megakernel launch of a vLLM model from a folder is refused (its start would carry
+        // the registry verifier and the megakernel host as well). One saved before that refusal is
+        // refused at its start in words, with the command that sets it back.
+        assert_eq!(refused, [("vllm", Some("megakernel"), true)]);
+        let saved = started_options("Qwen/Qwen3-4B", "vllm", Some("megakernel"), true);
+        if let Some(refusal) = request_refusal(&saved, &server_command(), "qwen3-4b") {
+            assert!(refusal.contains("128 KB the CUDA runtime takes") && refusal.contains("yougori model optimize qwen3-4b --launch speculative"), "{refusal}");
+        }
+    }
+    #[test]
+    fn a_start_too_large_for_the_agent_is_refused_in_words() {
+        let mut options = started_options("Qwen/Qwen3-4B", "vllm", None, false);
+        assert_eq!(request_refusal(&options, &server_command(), "qwen3-4b"), None);
+        // Values within 64 KiB each, which the agent takes one by one, and too many of them together.
+        options.environment.insert("FIXTURE_LARGE".into(), "x".repeat(32 * 1024));
+        let refusal = request_refusal(&options, &server_command(), "qwen3-4b").expect("over 128 KiB in one request");
+        assert!(refusal.starts_with("its settings and the sources its runner needs come to") && refusal.contains("128 KB"), "{refusal}");
+        assert!(!refusal.contains("megakernel"), "{refusal}");
+    }
+    #[test]
+    fn a_failed_refresh_is_in_the_status_until_a_start_refreshes_the_server() {
+        let id = "env-refresh-fixture";
+        let ready = json!({"status": "ready", "error": null, "optimizer": {}});
+        let shown = |health: &Value| with_refresh_failure(health.clone(), NOT_REFRESHED.lock().unwrap().get(id).cloned());
+        note_refresh(id, &Err("request body too large".into()));
+        let said = shown(&ready)["error"].as_str().unwrap().to_owned();
+        assert!(said.starts_with("This model kept the model server it had before this start") && said.ends_with("request body too large"), "{said}");
+        // The runner's own error says more about it now.
+        assert_eq!(shown(&json!({"status": "error", "error": "CUDA out of memory"}))["error"], "CUDA out of memory");
+        // A resume of a paused model refreshes nothing: it still runs the old server.
+        note_refresh(id, &Ok(false));
+        assert_eq!(shown(&ready)["error"], said.as_str());
+        note_refresh(id, &Ok(true));
+        assert_eq!(shown(&ready)["error"], Value::Null);
+    }
+    #[test]
+    fn agent_api_is_saved_for_the_next_start_once() {
+        let mut options = yougori_cli::workload::Options::default();
+        options.environment.insert("YOUGORI_MODEL".into(), "Qwen/Qwen3-8B".into());
+        assert!(set_agent_api(&mut options));
+        assert_eq!(options.environment.get("YOUGORI_MODEL_AGENT_API").map(String::as_str), Some("1"));
+        assert!(marked_for_start(&options));
+        // A second call finds the limits saved and changes nothing.
+        let before = options.clone();
+        assert!(!set_agent_api(&mut options));
+        assert_eq!(options, before);
+    }
+    #[test]
+    fn a_restart_is_required_only_while_the_container_lacks_the_agent_limits() {
+        use EnvironmentStatus::*;
+        let mut options = yougori_cli::workload::Options::default();
+        options.environment.insert("YOUGORI_MODEL".into(), "Qwen/Qwen3-8B".into());
+        // Another setting saved for the next start (GPU memory settings) needs no restart for them.
+        mark_for_start(&mut options);
+        for status in [Running, Paused, Error, Stopped, Provisioning] {
+            assert!(!agent_api_needs_restart(&status, &options), "{status:?}");
+        }
+        // Saved now: a running, paused or failed model resumes without the refresh that carries them;
+        // a stopped one gets them at its start.
+        set_agent_api(&mut options);
+        for (status, restart) in [(Running, true), (Paused, true), (Error, true), (Stopped, false), (Provisioning, false)] {
+            assert_eq!(agent_api_needs_restart(&status, &options), restart, "{status:?}");
+        }
+        // A model installed with them has nothing pending.
+        let mut installed = yougori_cli::workload::Options::default();
+        installed.environment.insert("YOUGORI_MODEL_AGENT_API".into(), "1".into());
+        assert!(!set_agent_api(&mut installed));
+        assert!(!agent_api_needs_restart(&Running, &installed));
+    }
     #[test]
     fn timing_replay_always_uses_owner_auth_without_matching_other_routes() {
         assert!(timing_diagnostics("/v1/diagnostics/timings"));
@@ -1869,9 +2166,9 @@ mod tests {
     }
     #[test] fn engine_backends_digest_is_portable_and_matches_the_embedded_runner() {
         use sha2::{Digest,Sha256};
-        let source=include_str!("model_runner/engine_backends.py").replace("\r\n","\n");
-        let digest=format!("{:x}",Sha256::digest(source.as_bytes()));
-        assert!(include_str!("model_server.py").contains(&format!("BACKENDS_SHA256 = \"{digest}\"")));
+        // The digest of the text a runner receives (backends_text), not of the file.
+        let pin=format!("BACKENDS_SHA256 = \"{:x}\"",Sha256::digest(backends_text().as_bytes()));
+        assert!(include_str!("model_server.py").contains(&pin), "model_server.py must pin the engine backends as they are sent: {pin}");
     }
     #[test] fn only_gguf_and_vllm_runners_carry_the_engine_backends() {
         for (format, carried) in [(Some("gguf"), true), (Some("vllm"), true), (None, false), (Some("safetensors"), false), (Some("source"), false)] {
@@ -1880,8 +2177,8 @@ mod tests {
             carry_server(&mut environment);
             assert_eq!(environment["YOUGORI_MODEL_SERVER_SOURCE"], json!(server_payload()));
             assert_eq!(environment.get("YOUGORI_BACKENDS_SOURCE").is_some(), carried, "{format:?}");
-            // The megakernel host travels only with vLLM runners, whose launch can be a megakernel.
-            assert_eq!(environment.get("YOUGORI_MEGAKERNEL_SOURCE").is_some(), format == Some("vllm"), "{format:?}");
+            // The megakernel host travels only with a vLLM runner whose launch is the megakernel.
+            assert!(environment.get("YOUGORI_MEGAKERNEL_SOURCE").is_none(), "{format:?}");
             assert!(environment.get("YOUGORI_MEDIA_SOURCE").is_none(), "{format:?}");
         }
         // The media backends travel only with media runners (Diffusers pipelines, text-to-speech).
@@ -1892,7 +2189,10 @@ mod tests {
         let compressed = STANDARD.decode(backends_source()).unwrap();
         let mut decoded = Vec::new();
         std::io::Read::read_to_end(&mut flate2::read::ZlibDecoder::new(&compressed[..]), &mut decoded).unwrap();
-        assert_eq!(decoded, include_str!("model_runner/engine_backends.py").replace("\r\n", "\n").into_bytes());
+        // The backends less their comment-only lines (backends_text): code and strings all there.
+        let decoded = String::from_utf8(decoded).unwrap();
+        assert_eq!(decoded, without_comment_lines(&include_str!("model_runner/engine_backends.py").replace("\r\n", "\n")));
+        assert!(decoded.contains("def load_gguf(") && decoded.len() < include_str!("model_runner/engine_backends.py").len());
     }
     #[test] fn the_megakernel_host_digest_is_pinned_by_the_engine_backends_and_fits_a_variable() {
         use sha2::{Digest,Sha256};
@@ -1971,7 +2271,17 @@ mod tests {
         let compressed = STANDARD.decode(server_payload()).unwrap();
         let mut decoded = Vec::new();
         std::io::Read::read_to_end(&mut flate2::read::ZlibDecoder::new(&compressed[..]), &mut decoded).unwrap();
-        assert_eq!(decoded, include_bytes!("model_server.py"));
+        // The script less its comment-only lines (without_comment_lines; model-server.test.py checks
+        // the parse tree is unchanged): its code and Unicode text are all there.
+        let decoded = String::from_utf8(decoded).unwrap();
+        assert_eq!(decoded, without_comment_lines(&include_str!("model_server.py").replace("\r\n", "\n")));
+        assert!(decoded.contains("def validate_chat(body):") && decoded.contains("Provide 1–"));
+        assert!(decoded.len() < include_str!("model_server.py").len());
+    }
+    #[test]
+    fn comment_lines_go_but_strings_and_code_stay() {
+        let source = "# head\nx = 1  # kept\n    # indented\ns = \"\"\"\n# inside a string\n\"\"\"\nt = '''one ''' # done\n# tail";
+        assert_eq!(without_comment_lines(source), "x = 1  # kept\ns = \"\"\"\n# inside a string\n\"\"\"\nt = '''one ''' # done");
     }
     #[test]
     fn model_resource_allocation_preserves_fixed_values_and_rejects_impossible_limits() {

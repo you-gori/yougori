@@ -1,5 +1,20 @@
 [
   {
+    "id": "yougori",
+    "name": "Yougori",
+    "mark": "YG",
+    "category": "coding",
+    "interface": "Terminal",
+    "description": "Yougori's own terminal agent, with every harness here in one screen.",
+    "source": "https://yougori.com",
+    "protocol": "chat_completions",
+    "questions": [],
+    "size": {
+      "cpu": 2,
+      "memory": 4
+    }
+  },
+  {
     "id": "deepseek",
     "name": "DeepSeek Harness",
     "mark": "DS",
@@ -7,7 +22,12 @@
     "interface": "Web / CLI launcher",
     "description": "An extensible workspace built around plugins.",
     "source": "https://github.com/deepseek-ai/deepseek-harness",
-    "protocol": "chat_completions"
+    "protocol": "chat_completions",
+    "questions": [],
+    "size": {
+      "cpu": 2,
+      "memory": 4
+    }
   },
   {
     "id": "opencode",
@@ -17,7 +37,12 @@
     "interface": "Terminal",
     "description": "A flexible coding workspace for the models you choose.",
     "source": "https://github.com/anomalyco/opencode",
-    "protocol": "chat_completions"
+    "protocol": "chat_completions",
+    "questions": [],
+    "size": {
+      "cpu": 2,
+      "memory": 4
+    }
   },
   {
     "id": "codex",
@@ -27,7 +52,12 @@
     "interface": "Terminal",
     "description": "Terminal coding, codebase editing, and testing.",
     "source": "https://developers.openai.com/codex/cli",
-    "protocol": "responses"
+    "protocol": "responses",
+    "questions": [],
+    "size": {
+      "cpu": 2,
+      "memory": 4
+    }
   },
   {
     "id": "pi",
@@ -37,7 +67,12 @@
     "interface": "Terminal",
     "description": "A compact agent toolkit you can make your own.",
     "source": "https://github.com/earendil-works/pi",
-    "protocol": "chat_completions"
+    "protocol": "chat_completions",
+    "questions": [],
+    "size": {
+      "cpu": 2,
+      "memory": 4
+    }
   },
   {
     "id": "gemini",
@@ -47,7 +82,12 @@
     "interface": "Terminal",
     "description": "Google's terminal agent for supported enterprise workflows.",
     "source": "https://github.com/google-gemini/gemini-cli",
-    "protocol": "google"
+    "protocol": "google",
+    "questions": [],
+    "size": {
+      "cpu": 2,
+      "memory": 4
+    }
   },
   {
     "id": "openhands",
@@ -57,7 +97,12 @@
     "interface": "Web / agent runtime",
     "description": "A workspace for agents and software engineering tasks.",
     "source": "https://github.com/OpenHands/OpenHands",
-    "protocol": "chat_completions"
+    "protocol": "chat_completions",
+    "questions": [],
+    "size": {
+      "cpu": 2,
+      "memory": 4
+    }
   },
   {
     "id": "cline",
@@ -67,7 +112,12 @@
     "interface": "CLI / editor",
     "description": "An agent in your terminal or your preferred editor.",
     "source": "https://github.com/cline/cline",
-    "protocol": "chat_completions"
+    "protocol": "chat_completions",
+    "questions": [],
+    "size": {
+      "cpu": 2,
+      "memory": 4
+    }
   },
   {
     "id": "interpreter",
@@ -77,7 +127,12 @@
     "interface": "Terminal",
     "description": "A coding agent built to work with open models.",
     "source": "https://github.com/openinterpreter/openinterpreter",
-    "protocol": "chat_completions"
+    "protocol": "chat_completions",
+    "questions": [],
+    "size": {
+      "cpu": 2,
+      "memory": 4
+    }
   },
   {
     "id": "goose",
@@ -87,7 +142,12 @@
     "interface": "CLI / desktop",
     "description": "An extensible agent for code and everyday workflows.",
     "source": "https://github.com/aaif-goose/goose",
-    "protocol": "chat_completions"
+    "protocol": "chat_completions",
+    "questions": [],
+    "size": {
+      "cpu": 2,
+      "memory": 4
+    }
   },
   {
     "id": "aider",
@@ -97,7 +157,12 @@
     "interface": "Terminal",
     "description": "Git-aware pair programming in your terminal.",
     "source": "https://aider.chat/docs/install.html",
-    "protocol": "chat_completions"
+    "protocol": "chat_completions",
+    "questions": [],
+    "size": {
+      "cpu": 2,
+      "memory": 4
+    }
   },
   {
     "id": "qwen",
@@ -107,7 +172,12 @@
     "interface": "CLI / editor",
     "description": "A coding workspace with multiple model protocols.",
     "source": "https://github.com/QwenLM/qwen-code",
-    "protocol": "chat_completions"
+    "protocol": "chat_completions",
+    "questions": [],
+    "size": {
+      "cpu": 2,
+      "memory": 4
+    }
   },
   {
     "id": "kilo",
@@ -117,7 +187,12 @@
     "interface": "CLI / editor",
     "description": "Bring your model service into an agentic coding workflow.",
     "source": "https://github.com/kilo-org/kilocode",
-    "protocol": "chat_completions"
+    "protocol": "chat_completions",
+    "questions": [],
+    "size": {
+      "cpu": 2,
+      "memory": 4
+    }
   },
   {
     "id": "grok",
@@ -127,7 +202,12 @@
     "interface": "Terminal",
     "description": "A terminal agent with custom model configuration.",
     "source": "https://docs.x.ai/build/overview",
-    "protocol": "custom"
+    "protocol": "custom",
+    "questions": [],
+    "size": {
+      "cpu": 2,
+      "memory": 4
+    }
   },
   {
     "id": "swe",
@@ -137,7 +217,22 @@
     "interface": "CLI / job runtime",
     "description": "An agent for structured software engineering tasks.",
     "source": "https://github.com/SWE-agent/SWE-agent",
-    "protocol": "custom"
+    "protocol": "custom",
+    "questions": [
+      {
+        "id": "issue",
+        "type": "text",
+        "question": "What should SWE-agent fix?",
+        "note": "Describe the issue or paste its text. SWE-agent works on it in a Git repository.",
+        "required": true,
+        "placeholder": "The sign-in page fails when the email has a plus sign",
+        "validate": "text"
+      }
+    ],
+    "size": {
+      "cpu": 2,
+      "memory": 4
+    }
   },
   {
     "id": "plandex",
@@ -147,7 +242,12 @@
     "interface": "Terminal",
     "description": "Plan and execute changes across larger projects.",
     "source": "https://github.com/plandex-ai/plandex",
-    "protocol": "custom"
+    "protocol": "custom",
+    "questions": [],
+    "size": {
+      "cpu": 2,
+      "memory": 4
+    }
   },
   {
     "id": "strix",
@@ -157,7 +257,119 @@
     "interface": "Terminal",
     "description": "Security testing and remediation for authorized applications.",
     "source": "https://github.com/usestrix/strix",
-    "protocol": "custom"
+    "protocol": "custom",
+    "questions": [
+      {
+        "id": "target",
+        "type": "target",
+        "question": "What should it test?",
+        "note": "The practice app is deliberately vulnerable and runs inside the VM, so it is safe to try.",
+        "required": true,
+        "placeholder": "https://staging.mycompany.com",
+        "validate": "target",
+        "reach": "targets",
+        "choices": [
+          {
+            "value": "practice",
+            "label": "A practice app inside the VM",
+            "note": "a deliberately vulnerable app Yougori starts inside the VM, safe to try"
+          },
+          {
+            "value": "address",
+            "label": "A website or address I give",
+            "note": "http(s) URLs, host:port or IPv4 addresses, separated by commas"
+          }
+        ]
+      },
+      {
+        "id": "permission",
+        "type": "confirm",
+        "question": "Do you own this target or have written permission to test it?",
+        "note": "Testing a system without its owner's permission is illegal in most places.",
+        "required": true,
+        "must": true,
+        "refusal": "Yougori tests only targets you own or have written permission to test. Nothing was started.",
+        "when": {
+          "id": "target",
+          "not": "practice"
+        }
+      },
+      {
+        "id": "off_limits",
+        "type": "list",
+        "question": "What is off limits?",
+        "note": "Paths or hosts it must not touch, separated by commas.",
+        "required": false,
+        "placeholder": "/billing, payments.mycompany.com",
+        "validate": "text"
+      },
+      {
+        "id": "depth",
+        "type": "choice",
+        "question": "How far may it go?",
+        "required": true,
+        "default": "safe",
+        "choices": [
+          {
+            "value": "look",
+            "label": "Look only",
+            "note": "maps the target and reads its pages; sends no attacks"
+          },
+          {
+            "value": "safe",
+            "label": "Test safely",
+            "note": "tries attacks that change and break nothing"
+          },
+          {
+            "value": "full",
+            "label": "Full exploitation",
+            "note": "exploits what it finds to prove it; may change data"
+          }
+        ]
+      },
+      {
+        "id": "login_user",
+        "type": "text",
+        "question": "Login for the test?",
+        "note": "A test account's user name or email, to test behind the sign-in.",
+        "required": false,
+        "placeholder": "test@mycompany.com",
+        "validate": "text"
+      },
+      {
+        "id": "login_password",
+        "type": "secret",
+        "question": "Password for that login?",
+        "note": "It never goes into files, logs or the report.",
+        "required": true,
+        "when": {
+          "id": "login_user",
+          "present": true
+        }
+      },
+      {
+        "id": "source",
+        "type": "folder",
+        "question": "Source code?",
+        "note": "A copy goes into the VM as its workspace, so the test can read the code.",
+        "required": false,
+        "validate": "path",
+        "workspace": true
+      },
+      {
+        "id": "focus",
+        "type": "text",
+        "question": "Focus?",
+        "note": "What matters most.",
+        "required": false,
+        "placeholder": "Login and payments",
+        "validate": "text"
+      }
+    ],
+    "size": {
+      "cpu": 4,
+      "memory": 8
+    }
   },
   {
     "id": "shannon",
@@ -167,7 +379,119 @@
     "interface": "CLI / runtime",
     "description": "Source-informed testing for web applications and APIs.",
     "source": "https://github.com/KeygraphHQ/shannon",
-    "protocol": "custom"
+    "protocol": "custom",
+    "questions": [
+      {
+        "id": "target",
+        "type": "target",
+        "question": "What should it test?",
+        "note": "The practice app is deliberately vulnerable and runs inside the VM, so it is safe to try.",
+        "required": true,
+        "placeholder": "https://staging.mycompany.com",
+        "validate": "target",
+        "reach": "targets",
+        "choices": [
+          {
+            "value": "practice",
+            "label": "A practice app inside the VM",
+            "note": "a deliberately vulnerable app Yougori starts inside the VM, safe to try"
+          },
+          {
+            "value": "address",
+            "label": "A website or address I give",
+            "note": "http(s) URLs, host:port or IPv4 addresses, separated by commas"
+          }
+        ]
+      },
+      {
+        "id": "permission",
+        "type": "confirm",
+        "question": "Do you own this target or have written permission to test it?",
+        "note": "Testing a system without its owner's permission is illegal in most places.",
+        "required": true,
+        "must": true,
+        "refusal": "Yougori tests only targets you own or have written permission to test. Nothing was started.",
+        "when": {
+          "id": "target",
+          "not": "practice"
+        }
+      },
+      {
+        "id": "off_limits",
+        "type": "list",
+        "question": "What is off limits?",
+        "note": "Paths or hosts it must not touch, separated by commas.",
+        "required": false,
+        "placeholder": "/billing, payments.mycompany.com",
+        "validate": "text"
+      },
+      {
+        "id": "depth",
+        "type": "choice",
+        "question": "How far may it go?",
+        "required": true,
+        "default": "safe",
+        "choices": [
+          {
+            "value": "look",
+            "label": "Look only",
+            "note": "maps the target and reads its pages; sends no attacks"
+          },
+          {
+            "value": "safe",
+            "label": "Test safely",
+            "note": "tries attacks that change and break nothing"
+          },
+          {
+            "value": "full",
+            "label": "Full exploitation",
+            "note": "exploits what it finds to prove it; may change data"
+          }
+        ]
+      },
+      {
+        "id": "login_user",
+        "type": "text",
+        "question": "Login for the test?",
+        "note": "A test account's user name or email, to test behind the sign-in.",
+        "required": false,
+        "placeholder": "test@mycompany.com",
+        "validate": "text"
+      },
+      {
+        "id": "login_password",
+        "type": "secret",
+        "question": "Password for that login?",
+        "note": "It never goes into files, logs or the report.",
+        "required": true,
+        "when": {
+          "id": "login_user",
+          "present": true
+        }
+      },
+      {
+        "id": "source",
+        "type": "folder",
+        "question": "Source code?",
+        "note": "Shannon reads the source code to plan its tests; a copy goes into the VM as its workspace.",
+        "required": true,
+        "validate": "path",
+        "workspace": true
+      },
+      {
+        "id": "focus",
+        "type": "text",
+        "question": "Focus?",
+        "note": "What matters most.",
+        "required": false,
+        "placeholder": "Login and payments",
+        "validate": "text"
+      }
+    ],
+    "size": {
+      "cpu": 4,
+      "memory": 8
+    }
   },
   {
     "id": "pentagi",
@@ -177,7 +501,119 @@
     "interface": "Terminal",
     "description": "A multi-agent workspace for authorized security assessments.",
     "source": "https://github.com/vxcontrol/pentagi",
-    "protocol": "custom"
+    "protocol": "custom",
+    "questions": [
+      {
+        "id": "target",
+        "type": "target",
+        "question": "What should it test?",
+        "note": "The practice app is deliberately vulnerable and runs inside the VM, so it is safe to try.",
+        "required": true,
+        "placeholder": "https://staging.mycompany.com",
+        "validate": "target",
+        "reach": "targets",
+        "choices": [
+          {
+            "value": "practice",
+            "label": "A practice app inside the VM",
+            "note": "a deliberately vulnerable app Yougori starts inside the VM, safe to try"
+          },
+          {
+            "value": "address",
+            "label": "A website or address I give",
+            "note": "http(s) URLs, host:port or IPv4 addresses, separated by commas"
+          }
+        ]
+      },
+      {
+        "id": "permission",
+        "type": "confirm",
+        "question": "Do you own this target or have written permission to test it?",
+        "note": "Testing a system without its owner's permission is illegal in most places.",
+        "required": true,
+        "must": true,
+        "refusal": "Yougori tests only targets you own or have written permission to test. Nothing was started.",
+        "when": {
+          "id": "target",
+          "not": "practice"
+        }
+      },
+      {
+        "id": "off_limits",
+        "type": "list",
+        "question": "What is off limits?",
+        "note": "Paths or hosts it must not touch, separated by commas.",
+        "required": false,
+        "placeholder": "/billing, payments.mycompany.com",
+        "validate": "text"
+      },
+      {
+        "id": "depth",
+        "type": "choice",
+        "question": "How far may it go?",
+        "required": true,
+        "default": "safe",
+        "choices": [
+          {
+            "value": "look",
+            "label": "Look only",
+            "note": "maps the target and reads its pages; sends no attacks"
+          },
+          {
+            "value": "safe",
+            "label": "Test safely",
+            "note": "tries attacks that change and break nothing"
+          },
+          {
+            "value": "full",
+            "label": "Full exploitation",
+            "note": "exploits what it finds to prove it; may change data"
+          }
+        ]
+      },
+      {
+        "id": "login_user",
+        "type": "text",
+        "question": "Login for the test?",
+        "note": "A test account's user name or email, to test behind the sign-in.",
+        "required": false,
+        "placeholder": "test@mycompany.com",
+        "validate": "text"
+      },
+      {
+        "id": "login_password",
+        "type": "secret",
+        "question": "Password for that login?",
+        "note": "It never goes into files, logs or the report.",
+        "required": true,
+        "when": {
+          "id": "login_user",
+          "present": true
+        }
+      },
+      {
+        "id": "source",
+        "type": "folder",
+        "question": "Source code?",
+        "note": "A copy goes into the VM as its workspace, so the test can read the code.",
+        "required": false,
+        "validate": "path",
+        "workspace": true
+      },
+      {
+        "id": "focus",
+        "type": "text",
+        "question": "Focus?",
+        "note": "What matters most.",
+        "required": false,
+        "placeholder": "Login and payments",
+        "validate": "text"
+      }
+    ],
+    "size": {
+      "cpu": 4,
+      "memory": 8
+    }
   },
   {
     "id": "pentestgpt",
@@ -187,7 +623,119 @@
     "interface": "CLI / runtime",
     "description": "Structured workflows for security testing and research.",
     "source": "https://github.com/GreyDGL/PentestGPT",
-    "protocol": "custom"
+    "protocol": "custom",
+    "questions": [
+      {
+        "id": "target",
+        "type": "target",
+        "question": "What should it test?",
+        "note": "The practice app is deliberately vulnerable and runs inside the VM, so it is safe to try.",
+        "required": true,
+        "placeholder": "https://staging.mycompany.com",
+        "validate": "target",
+        "reach": "targets",
+        "choices": [
+          {
+            "value": "practice",
+            "label": "A practice app inside the VM",
+            "note": "a deliberately vulnerable app Yougori starts inside the VM, safe to try"
+          },
+          {
+            "value": "address",
+            "label": "A website or address I give",
+            "note": "http(s) URLs, host:port or IPv4 addresses, separated by commas"
+          }
+        ]
+      },
+      {
+        "id": "permission",
+        "type": "confirm",
+        "question": "Do you own this target or have written permission to test it?",
+        "note": "Testing a system without its owner's permission is illegal in most places.",
+        "required": true,
+        "must": true,
+        "refusal": "Yougori tests only targets you own or have written permission to test. Nothing was started.",
+        "when": {
+          "id": "target",
+          "not": "practice"
+        }
+      },
+      {
+        "id": "off_limits",
+        "type": "list",
+        "question": "What is off limits?",
+        "note": "Paths or hosts it must not touch, separated by commas.",
+        "required": false,
+        "placeholder": "/billing, payments.mycompany.com",
+        "validate": "text"
+      },
+      {
+        "id": "depth",
+        "type": "choice",
+        "question": "How far may it go?",
+        "required": true,
+        "default": "safe",
+        "choices": [
+          {
+            "value": "look",
+            "label": "Look only",
+            "note": "maps the target and reads its pages; sends no attacks"
+          },
+          {
+            "value": "safe",
+            "label": "Test safely",
+            "note": "tries attacks that change and break nothing"
+          },
+          {
+            "value": "full",
+            "label": "Full exploitation",
+            "note": "exploits what it finds to prove it; may change data"
+          }
+        ]
+      },
+      {
+        "id": "login_user",
+        "type": "text",
+        "question": "Login for the test?",
+        "note": "A test account's user name or email, to test behind the sign-in.",
+        "required": false,
+        "placeholder": "test@mycompany.com",
+        "validate": "text"
+      },
+      {
+        "id": "login_password",
+        "type": "secret",
+        "question": "Password for that login?",
+        "note": "It never goes into files, logs or the report.",
+        "required": true,
+        "when": {
+          "id": "login_user",
+          "present": true
+        }
+      },
+      {
+        "id": "source",
+        "type": "folder",
+        "question": "Source code?",
+        "note": "A copy goes into the VM as its workspace, so the test can read the code.",
+        "required": false,
+        "validate": "path",
+        "workspace": true
+      },
+      {
+        "id": "focus",
+        "type": "text",
+        "question": "Focus?",
+        "note": "What matters most.",
+        "required": false,
+        "placeholder": "Login and payments",
+        "validate": "text"
+      }
+    ],
+    "size": {
+      "cpu": 4,
+      "memory": 8
+    }
   },
   {
     "id": "hexstrike",
@@ -197,7 +745,119 @@
     "interface": "Terminal / MCP",
     "description": "Connect authorized security tools to a compatible agent.",
     "source": "https://github.com/0x4m4/hexstrike-ai",
-    "protocol": "mcp"
+    "protocol": "mcp",
+    "questions": [
+      {
+        "id": "target",
+        "type": "target",
+        "question": "What should it test?",
+        "note": "The practice app is deliberately vulnerable and runs inside the VM, so it is safe to try.",
+        "required": true,
+        "placeholder": "https://staging.mycompany.com",
+        "validate": "target",
+        "reach": "targets",
+        "choices": [
+          {
+            "value": "practice",
+            "label": "A practice app inside the VM",
+            "note": "a deliberately vulnerable app Yougori starts inside the VM, safe to try"
+          },
+          {
+            "value": "address",
+            "label": "A website or address I give",
+            "note": "http(s) URLs, host:port or IPv4 addresses, separated by commas"
+          }
+        ]
+      },
+      {
+        "id": "permission",
+        "type": "confirm",
+        "question": "Do you own this target or have written permission to test it?",
+        "note": "Testing a system without its owner's permission is illegal in most places.",
+        "required": true,
+        "must": true,
+        "refusal": "Yougori tests only targets you own or have written permission to test. Nothing was started.",
+        "when": {
+          "id": "target",
+          "not": "practice"
+        }
+      },
+      {
+        "id": "off_limits",
+        "type": "list",
+        "question": "What is off limits?",
+        "note": "Paths or hosts it must not touch, separated by commas.",
+        "required": false,
+        "placeholder": "/billing, payments.mycompany.com",
+        "validate": "text"
+      },
+      {
+        "id": "depth",
+        "type": "choice",
+        "question": "How far may it go?",
+        "required": true,
+        "default": "safe",
+        "choices": [
+          {
+            "value": "look",
+            "label": "Look only",
+            "note": "maps the target and reads its pages; sends no attacks"
+          },
+          {
+            "value": "safe",
+            "label": "Test safely",
+            "note": "tries attacks that change and break nothing"
+          },
+          {
+            "value": "full",
+            "label": "Full exploitation",
+            "note": "exploits what it finds to prove it; may change data"
+          }
+        ]
+      },
+      {
+        "id": "login_user",
+        "type": "text",
+        "question": "Login for the test?",
+        "note": "A test account's user name or email, to test behind the sign-in.",
+        "required": false,
+        "placeholder": "test@mycompany.com",
+        "validate": "text"
+      },
+      {
+        "id": "login_password",
+        "type": "secret",
+        "question": "Password for that login?",
+        "note": "It never goes into files, logs or the report.",
+        "required": true,
+        "when": {
+          "id": "login_user",
+          "present": true
+        }
+      },
+      {
+        "id": "source",
+        "type": "folder",
+        "question": "Source code?",
+        "note": "A copy goes into the VM as its workspace, so the test can read the code.",
+        "required": false,
+        "validate": "path",
+        "workspace": true
+      },
+      {
+        "id": "focus",
+        "type": "text",
+        "question": "Focus?",
+        "note": "What matters most.",
+        "required": false,
+        "placeholder": "Login and payments",
+        "validate": "text"
+      }
+    ],
+    "size": {
+      "cpu": 4,
+      "memory": 8
+    }
   },
   {
     "id": "claude",
@@ -207,6 +867,11 @@
     "interface": "Terminal",
     "description": "Anthropic's official coding client.",
     "source": "https://code.claude.com/docs/en/overview",
-    "protocol": "messages"
+    "protocol": "messages",
+    "questions": [],
+    "size": {
+      "cpu": 2,
+      "memory": 4
+    }
   }
 ]

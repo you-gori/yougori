@@ -7,7 +7,8 @@
 //! `-no-user-config`; a read-only root drive; declared data volumes only; one entropy
 //! device; the link channel of its platform; the link secret through fw_cfg; QMP only on
 //! a socket in the host-created private directory; an explicitly requested outbound NAT
-//! adapter or no network device; no share, USB, display,
+//! adapter whose every frame passes the host's network filter, or no network device; no
+//! share, USB, display,
 //! console or balloon device and no PCI transport (the device profile cannot declare
 //! any of them today); and on Linux QEMU's seccomp sandbox.
 
@@ -30,7 +31,7 @@ use crate::foundation::ledger::{
 };
 use crate::sandbox::backend::{
     precheck, vm_handle, BackendFeatures, BackendIdentity, BackendKind, ConfinementControl,
-    GuestEgressEndpoint, HostEvidence, LaunchRefusal, LaunchRequest,
+    GuestEgressEndpoint, HostEvidence, LaunchRefusal, LaunchRequest, NetworkTarget,
 };
 
 /// The virtio-serial port name the guest agent opens for the link.
@@ -49,12 +50,52 @@ pub const MAX_VOLUMES: usize = 8;
 pub(super) const INTERNET_BACKEND: &str = "user,id=internet,ipv6=off";
 pub(super) const INTERNET_DEVICE: &str = "virtio-net-device,netdev=internet";
 pub(super) const INTERNET_BOOT_MODE: &str = "name=opt/yougori/internet,string=1";
+
+/// The canonical arguments a network card adds to a profile ([`network_args`]), as the
+/// golden comparison extends an offline golden file with them.
 pub(super) fn internet_arguments() -> Vec<String> {
-    vec![
-        "-netdev".into(), INTERNET_BACKEND.into(),
-        "-device".into(), INTERNET_DEVICE.into(),
-        "-fw_cfg".into(), INTERNET_BOOT_MODE.into(),
-    ]
+    flatten(&canonical(&network_args(["", "", "", ""])))
+}
+
+/// The network card and the host's filter of its frames: QEMU's user network, the device and
+/// the guest's boot flag, then the filter's four sockets in the private directory and the two
+/// redirectors that send every frame through them: queue `rx` takes the guest's frames on
+/// their way to the user network (out on socket 0, back on 1), queue `tx` the user network's
+/// on their way to the guest (out on 2, back on 3). A redirector with an output keeps every
+/// frame it takes, so a frame the host has not judged reaches neither side, and none passes
+/// while the host's end of a socket is closed.
+fn network_args(sockets: [&str; 4]) -> Vec<Arg> {
+    let mut args = vec![
+        Arg::plain("-netdev", Part::text(INTERNET_BACKEND)),
+        Arg::plain("-device", Part::text(INTERNET_DEVICE)),
+        Arg::plain("-fw_cfg", Part::text(INTERNET_BOOT_MODE)),
+    ];
+    for (index, socket) in (0u8..).zip(sockets) {
+        args.push(Arg::items(
+            "-chardev",
+            vec![
+                Item::implied("socket"),
+                Item::pair("id", format!("net{index}")),
+                Item::bound("path", Role::NetworkSocket { index }, socket),
+                Item::pair("server", "on"),
+                Item::pair("wait", "off"),
+            ],
+        ));
+    }
+    for (queue, out, back) in [("rx", 0, 1), ("tx", 2, 3)] {
+        args.push(Arg::items(
+            "-object",
+            vec![
+                Item::implied("filter-redirector"),
+                Item::pair("id", format!("net-{queue}")),
+                Item::pair("netdev", "internet"),
+                Item::pair("queue", queue),
+                Item::pair("outdev", format!("net{out}")),
+                Item::pair("indev", format!("net{back}")),
+            ],
+        ));
+    }
+    args
 }
 
 /// The features the QEMU profile offers beyond launch and stop: none. Snapshots, a
@@ -154,6 +195,11 @@ pub enum ProfileRefusal {
     WorkloadImage {
         detail: String,
     },
+    /// The targets the VM's network card is held to are not the request's, or are named for
+    /// a launch without a network card.
+    NetworkTargets {
+        detail: String,
+    },
     /// The backend identity is not a QEMU build.
     NotQemuBackend {
         kind: BackendKind,
@@ -223,6 +269,7 @@ impl fmt::Display for ProfileRefusal {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::WorkloadImage { detail } => write!(f, "image declaration: {detail}"),
+            Self::NetworkTargets { detail } => write!(f, "network targets: {detail}"),
             Self::NotQemuBackend { kind } => write!(f, "{kind} is not a QEMU backend"),
             Self::Platform { refusal } => write!(f, "{refusal}"),
             Self::HypervisorMismatch { platform, backend } => write!(
@@ -615,9 +662,13 @@ impl QemuProfile {
             args.push(Arg::items("-sandbox", items));
         }
         if self.internet {
-            args.push(Arg::plain("-netdev", Part::text(INTERNET_BACKEND)));
-            args.push(Arg::plain("-device", Part::text(INTERNET_DEVICE)));
-            args.push(Arg::plain("-fw_cfg", Part::text(INTERNET_BOOT_MODE)));
+            let [rx, rx_back, tx, tx_back] = self.control.network_sockets();
+            args.extend(network_args([
+                rx.as_str(),
+                rx_back.as_str(),
+                tx.as_str(),
+                tx_back.as_str(),
+            ]));
         }
         args
     }
@@ -678,6 +729,9 @@ pub struct QemuLaunchInputs {
     /// The endpoints the guest may address over the link (the launch's declaration).
     pub egress_endpoints: Vec<GuestEgressEndpoint>,
     pub workload_image: Option<crate::sandbox_contract::oci::WorkloadImage>,
+    /// The only destinations the network card reaches (the launch's targets); `None` with a
+    /// card is the public internet.
+    pub targets: Option<Vec<NetworkTarget>>,
 }
 
 /// A launch ready to start: the profile, the CORE-01 hypervisor evidence the backend's
@@ -696,11 +750,21 @@ pub struct QemuLaunchPlan {
     /// which names only the file).
     egress_endpoints: Vec<GuestEgressEndpoint>,
     workload_image: Option<crate::sandbox_contract::oci::WorkloadImage>,
+    /// What the host's network filter lets the card reach: these targets alone, or with
+    /// `None` the public internet (never this computer or its networks). Not part of the
+    /// vector: the filter the host starts beside QEMU applies it.
+    targets: Option<Vec<NetworkTarget>>,
 }
 
 impl QemuLaunchPlan {
     pub fn profile(&self) -> &QemuProfile {
         &self.profile
+    }
+
+    /// The targets the network card is held to; `None` is the public internet for a profile
+    /// with a card and nothing for one without.
+    pub fn targets(&self) -> Option<&[NetworkTarget]> {
+        self.targets.as_deref()
     }
 
     /// The endpoints the guest is told of at boot.
@@ -788,6 +852,21 @@ pub fn plan_launch(
             });
         }
     }
+    let internet = request
+        .required
+        .network
+        .channels
+        .contains(&crate::sandbox::backend::NetworkChannel::Internet);
+    if inputs.targets != request.required.targets {
+        return Err(ProfileRefusal::NetworkTargets {
+            detail: "the layout changed the requested targets".into(),
+        });
+    }
+    if inputs.targets.is_some() && !internet {
+        return Err(ProfileRefusal::NetworkTargets {
+            detail: "targets were named for a launch without a network card".into(),
+        });
+    }
     let evidence = precheck(request, backend, &qemu_features(), host)
         .map_err(|refusal| ProfileRefusal::Launch { refusal })?;
     let missing: BTreeSet<ConfinementControl> = request
@@ -846,7 +925,7 @@ pub fn plan_launch(
         request.generations.boot,
     ));
     let profile = QemuProfile::assemble(ProfileParts {
-        internet: request.required.network.channels.contains(&crate::sandbox::backend::NetworkChannel::Internet),
+        internet,
         platform: inputs.platform,
         name,
         resources: inputs.resources,
@@ -882,5 +961,6 @@ pub fn plan_launch(
         linux,
         egress_endpoints: inputs.egress_endpoints,
         workload_image: inputs.workload_image,
+        targets: inputs.targets,
     })
 }

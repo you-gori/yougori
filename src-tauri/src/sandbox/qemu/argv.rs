@@ -34,6 +34,8 @@ pub enum Role {
     EgressEndpoints,
     Workload,
     GuestCid,
+    /// One of the network filter's four sockets (`NETWORK_SOCKET_NAMES`).
+    NetworkSocket { index: u8 },
 }
 
 impl Role {
@@ -55,6 +57,7 @@ impl Role {
             Self::EgressEndpoints => "{egress_endpoints}".into(),
             Self::Workload => "{workload}".into(),
             Self::GuestCid => "{guest_cid}".into(),
+            Self::NetworkSocket { index } => format!("{{network_socket{index}}}"),
         }
     }
 }

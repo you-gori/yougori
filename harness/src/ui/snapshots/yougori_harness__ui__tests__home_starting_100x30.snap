@@ -1,0 +1,35 @@
+---
+source: src/ui/tests.rs
+expression: wide
+---
+
+  ▀▄ ▄▀ ▄▀▀▄ █  █ ▄▀▀▀ ▄▀▀▄ █▀▀▄ ▀█▀
+    █   █  █ █  █ █ ▀█ █  █ █▀█   █     OpenCode  v1.0.0
+    ▀    ▀▀   ▀▀   ▀▀▀  ▀▀  ▀  ▀ ▀▀▀    qwen3-coder-30b
+
+  ⠋ Starting OpenCode…  2.4s
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+╭──────────────────────────────────────────────────────────────────────────────────────────────────╮
+│ › Ask OpenCode anything                                                                          │
+╰──────────────────────────────────────────────────────────────────────────────────────────────────╯
+ enter send   shift+enter new line   ctrl+p commands   ctrl+c quit
+ ⠋ starting 2.4s · OpenCode · qwen3-coder-30b · reaches only the inference
+[cursor 4,26]

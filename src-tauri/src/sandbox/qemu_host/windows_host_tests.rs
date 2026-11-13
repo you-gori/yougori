@@ -67,6 +67,7 @@ fn windows_inputs(control: &Path) -> QemuLaunchInputs {
         vsock_cid: None,
         egress_endpoints: Vec::new(),
         workload_image: None,
+        targets: None,
     }
 }
 
@@ -730,6 +731,7 @@ fn a_start_for_another_role_or_without_windows_restrictions_creates_nothing() {
             vsock_cid: None,
             egress_endpoints: Vec::new(),
             workload_image: None,
+            targets: None,
         },
     )
     .unwrap();

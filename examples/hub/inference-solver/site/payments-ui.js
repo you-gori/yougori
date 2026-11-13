@@ -79,7 +79,84 @@ async function refreshPayments() {
   }
 }
 
-function renderPriceAdmin() {
+// Subscriptions. On Usage: one's own subscription, the share of its window's limit used (never the
+// tokens) and when it resets, and the plans offered with their models, bought from the balance 30
+// days at a time (subscriptions.py). In Admin: the on/off switch, one to five plans with their
+// models and tokens, and the people subscribed, each with a reset that gives them a fresh window.
+const RESETS = {'5h': 'every 5 hours', week: 'every week'};
+const tokenCount = n => n >= 1000000 ? +(n / 1000000).toFixed(3) + 'M' : n >= 1000 ? +(n / 1000).toFixed(1) + 'K' : String(n);
+const modelNames = ids => ids.map(id => { const m = models.find(m => m.id === id); return m ? friendly(m) : id.split('/').pop(); }).join(', ');
+const when = seconds => new Date(seconds * 1000).toLocaleString(undefined, {dateStyle: 'medium', timeStyle: 'short'});
+async function renderSubscriptions() {
+  const state = await api('/api/subscriptions');
+  if(currentRoute()[0] !== 'usage' || !$('#credits')) return;
+  $('#subscriptions')?.remove();
+  const mine = state.subscription;
+  if(!state.plans.length && !mine) return;
+  const offered = mine && state.plans.some(p => p.id === mine.plan);
+  const area = document.createElement('section'); area.id = 'subscriptions';
+  area.innerHTML = panel('Subscription', `<div class="stack">${mine ? `<p><strong>${esc(mine.name)}</strong> · runs until ${esc(when(mine.ends))}</p>
+    <div class="subscription-meter" role="meter" aria-label="Limit used in this window" aria-valuemin="0" aria-valuemax="100" aria-valuenow="${mine.used_percent}"><i></i></div>
+    <p class="hint" id="subscription-window">${mine.used_percent}% of this window's limit used. The limit resets ${RESETS[mine.resets]}${mine.resets_at ? `, next at ${esc(when(mine.resets_at))}` : '; the window opens with your next request'}. Included: ${esc(modelNames(mine.models))}.</p>` : ''}
+    <p class="hint">Paid from your balance, 30 days at a time. Requests to a subscription's models are included until the window's limit is reached; past it, and for other models, they are charged from your balance at the token prices until the limit resets.</p>
+    ${state.plans.map(p => `<div class="source"><div><strong>${esc(p.name)}</strong><p>${dollars(p.price_microusd)} per 30 days · limit resets ${RESETS[p.resets]}</p><p>Models: ${esc(modelNames(p.models))}</p></div>${mine && mine.plan !== p.id ? '' : `<button type="button" class="secondary" data-subscribe="${esc(p.id)}">${mine ? 'Add 30 days' : 'Subscribe'}</button>`}</div>`).join('')}
+    ${mine && !state.enabled ? '<p class="hint">Subscriptions are not offered at the moment; yours runs to its end.</p>' : mine && state.plans.some(p => p.id !== mine.plan) ? `<p class="hint">You can choose another subscription when ${offered ? 'this one' : 'yours'} ends.</p>` : ''}</div>`);
+  $('#credits').after(area);
+  // CSSOM, not an inline style attribute: the page's content security policy allows only this.
+  area.querySelector('.subscription-meter i')?.style.setProperty('width', mine.used_percent + '%');
+  area.querySelectorAll('[data-subscribe]').forEach(button => button.addEventListener('click', () => {
+    const plan = state.plans.find(p => p.id === button.dataset.subscribe);
+    confirmAction(mine ? `Add 30 days to ${plan.name}?` : `Subscribe to ${plan.name}?`, `${dollars(plan.price_microusd)} is paid from your balance for 30 days.`, async () => {
+      await api('/api/subscriptions/subscribe', {plan: plan.id});
+      $('#credit-balance').textContent = dollars((await api('/api/payments')).balance_microusd);
+      await renderSubscriptions();
+      notice(mine ? 'Subscription extended by 30 days.' : `Subscribed to ${plan.name}.`);
+    });
+  }));
+}
+
+function renderSubscriptionAdmin(state) {
+  // Text models only: media jobs are charged by what they make, not by subscription tokens.
+  const served = models.filter(m => !isMedia(m));
+  const choices = p => [...served.map(m => [m.id, friendly(m)]), ...(p.models || []).filter(id => !served.some(m => m.id === id)).map(id => [id, id])]
+    .map(([id, name]) => `<label class="check"><input type="checkbox" name="model" value="${esc(id)}"${p.id ? (p.models.includes(id) ? ' checked' : '') : ' checked'}>${esc(name)}</label>`).join('');
+  const form = (p = {}) => `<form class="stack subscription-plan"${p.id ? ` data-plan="${esc(p.id)}"` : ''}><div class="admin-row"><label>Name<input name="name" maxlength="40" required value="${esc(p.name || '')}" placeholder="Pro"></label><label>USD per 30 days<input name="price_usd" inputmode="decimal" required value="${p.id ? esc(String(p.price_microusd / 1000000)) : ''}" placeholder="25"></label><label>Tokens per window, millions<input name="tokens_millions" inputmode="decimal" required value="${p.id ? esc(String(p.token_limit / 1000000)) : ''}" placeholder="10"></label><label>Limit resets<select name="resets">${Object.entries(RESETS).map(([value, label]) => `<option value="${value}"${p.resets === value ? ' selected' : ''}>${label[0].toUpperCase() + label.slice(1)}</option>`).join('')}</select></label><button class="secondary" type="submit">${p.id ? 'Save' : 'Add subscription'}</button>${p.id ? '<button type="button" class="text-button" data-remove-plan>Remove</button>' : ''}</div><fieldset class="plan-models"><legend>Models included</legend><div class="choice-names">${choices(p) || '<p class="hint">Connect a model first.</p>'}</div></fieldset><p class="error" role="alert"></p></form>`;
+  const people = state.subscribers.length ? state.subscribers.map(s => `<div class="source"><div><strong>${esc(s.email)}</strong><p>${esc(s.name)} · ${tokenCount(s.used)} of ${tokenCount(s.token_limit)} tokens used (${s.used_percent}%)${s.resets_at ? ` · resets ${esc(when(s.resets_at))}` : ''} · until ${esc(when(s.ends))}</p></div><button type="button" class="text-button" data-reset-user="${esc(s.user)}">Reset limit</button></div>`).join('') : '<p class="hint">No one is subscribed yet.</p>';
+  const section = adminElement('admin-subscriptions', 'Subscriptions', `One to ${state.limit} plans people buy from their balance for 30 days. Each includes models and a token limit that resets every 5 hours or every week; subscribers see only the share used. Past it, requests are charged at the token prices.`,
+    `<label class="check"><input type="checkbox" id="subscriptions-on"${state.enabled ? ' checked' : ''}>Offer subscriptions</label><p class="hint">Off: nothing can be bought, and subscriptions already paid for run to their end.</p>
+    <div class="stack" id="subscription-plans">${state.plans.map(form).join('')}${state.plans.length < state.limit ? form() : `<p class="hint">${state.limit} subscriptions offered: remove one to add another.</p>`}</div><div class="stack subscribers"><span class="choice-label">Subscribed</span>${people}</div>`);
+  const shown = $('#admin-subscriptions');
+  if(shown) shown.replaceWith(section); else placeAdmin('#slot-subscriptions', section);
+  section.querySelector('#subscriptions-on').addEventListener('change', async event => {
+    const box = event.currentTarget; box.disabled = true;
+    try { renderSubscriptionAdmin(await api('/api/admin/subscriptions/switch', {enabled: box.checked})); notice(box.checked ? 'Subscriptions are offered.' : 'Subscriptions are switched off.'); }
+    catch(problem) { notice(problem.message); box.checked = !box.checked; box.disabled = false; }
+  });
+  section.addEventListener('submit', async event => {
+    event.preventDefault();
+    const plan = event.target.closest('form'), button = plan.querySelector('[type="submit"]'), error = plan.querySelector('.error');
+    button.disabled = true; error.textContent = '';
+    try {
+      const data = new FormData(plan);
+      renderSubscriptionAdmin(await api('/api/admin/subscriptions/plan', {name: data.get('name'), price_usd: data.get('price_usd'), tokens_millions: data.get('tokens_millions'),
+        resets: data.get('resets'), models: data.getAll('model'), ...(plan.dataset.plan ? {id: plan.dataset.plan} : {})}));
+      notice('Subscription saved.');
+    } catch(problem) { error.textContent = problem.message; button.disabled = false; }
+  });
+  section.addEventListener('click', event => {
+    const remove = event.target.closest('[data-remove-plan]'), reset = event.target.closest('[data-reset-user]');
+    if(remove) confirmAction('Remove this subscription?', 'People who bought it keep it until their 30 days end.', async () => {
+      renderSubscriptionAdmin(await api('/api/admin/subscriptions/remove', {id: remove.closest('form').dataset.plan}));
+    });
+    if(reset) {
+      reset.disabled = true;
+      api('/api/admin/subscriptions/reset', {user: reset.dataset.resetUser}).then(state => { renderSubscriptionAdmin(state); notice('Limit reset: a fresh window starts with the next request.'); })
+        .catch(problem => { notice(problem.message); reset.disabled = false; });
+    }
+  });
+}
+
+async function renderPriceAdmin() {
   placeAdmin('#slot-prices', adminElement('admin-prices', 'Model pricing', 'USD per million tokens. Zero is free.', `<form id="model-price" class="stack"><div class="admin-row"${models.length ? '' : ' hidden'}><label>Model<select name="model">${models.map(m=>`<option value="${esc(m.id)}">${esc(friendly(m))}</option>`).join('')}</select></label><label>Input / 1M tokens ($)<input name="input_usd" type="number" min="0" max="1000" step="0.000001" required value="0"></label><label>Cached input / 1M tokens ($)<input name="cached_usd" type="number" min="0" max="1000" step="0.000001" required value="0"></label><label>Output / 1M tokens ($)<input name="output_usd" type="number" min="0" max="1000" step="0.000001" required value="0"></label><button class="primary" type="submit">Save model price</button></div><p class="hint">${models.length ? "Billed from the model server's measured tokens. Cached input is the part of a prompt the server reused from earlier turns; in agent conversations it is most of the input." : 'No model is connected yet. Its prices are set here once it is.'}</p><p class="error" role="alert"></p></form>`));
   const form = $('#model-price');
   // Cached input follows the input price until it is changed by hand, so a new input price never
@@ -101,6 +178,7 @@ function renderPriceAdmin() {
     notice('Model token prices saved.');
   });
   renderMediaAdmin();
+  renderSubscriptionAdmin(await api('/api/admin/subscriptions'));
 }
 
 // Media models are priced by what a job makes; their outputs are kept on this website for a while.

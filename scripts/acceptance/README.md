@@ -10,16 +10,32 @@ account. It never reaches the installed engine, its data folder or its sign-ins.
 ## The `acceptance` build feature
 
 The CLI, the engine library and the headless engine have an `acceptance` Cargo feature. No
-release build enables it. With it, three environment variables apply:
+release build enables it. With it, four environment variables apply:
 
 | Variable | Effect |
 | --- | --- |
 | `YOUGORI_ACCEPTANCE_ENDPOINT` | The control pipe (`\\.\pipe\NAME`) or socket the engine listens on and the CLI calls |
 | `YOUGORI_ACCEPTANCE_DATA_DIR` | The engine's data folder, an absolute path |
 | `YOUGORI_ACCEPTANCE_RUNTIME_DIR` | A runtime folder to run instead of the bundled one, verified against its own checksum lists |
+| `YOUGORI_ACCEPTANCE_CATALOG_ROOT` | The engine's model catalog folder, an absolute path, or `off` for none. Unset, `catalog` in the data folder, on the installed engine's default terms (64 GiB free on that drive; 32 GiB per scope unless `YOUGORI_CATALOG_QUOTA_BYTES` says otherwise) |
 
 The feature fails closed. A malformed pipe name, the installed engine's own pipe name, or a data
 folder given without a pipe name is an error. It never falls back to the installed endpoint.
+
+The disposable engine never uses `YOUGORI_CATALOG_ROOT`. It inherits that variable from your
+environment, where it names the installed engine's catalog. A relative catalog folder, the folder
+`YOUGORI_CATALOG_ROOT` names, or the installed engine's data folder or anything in it (its default
+catalog included) leaves the disposable engine without a catalog, as does an unset
+`YOUGORI_ACCEPTANCE_CATALOG_ROOT` without `YOUGORI_ACCEPTANCE_DATA_DIR`. Then
+`yougori call catalog_status` says why, and nothing falls back to another folder. A script that
+set `YOUGORI_CATALOG_ROOT` for a test engine sets `YOUGORI_ACCEPTANCE_CATALOG_ROOT` instead.
+
+A catalog folder belongs to one engine at a time. The engine that opens it locks the empty file
+`catalog.lock` in it, and the system releases that lock when the engine's process ends, a crash
+included, so the file never needs cleaning up; leave it in place. An engine that finds the
+folder locked opens nothing in it and changes nothing there. Its catalog status names the folder
+and says what to do: quit the engine that uses it, or give this engine a folder of its own, then
+restart this engine.
 
 The engine's single-instance lock and its deployment-secrets vault entries also get a suffix
 derived from the data folder. The disposable engine therefore sees none of the installed
@@ -146,6 +162,6 @@ startup there writes this Windows account's startup entry.
 ## What it never does
 
 It never stops, restarts or calls the installed engine, and never reads or changes its data
-folder. It never uses the installed engine's sign-ins, never publishes anywhere but the in-memory
+folder or its catalog. It never uses the installed engine's sign-ins, never publishes anywhere but the in-memory
 Hub, and never changes the bundled runtime. Quitting the disposable engine stops only its own
 sandboxes.

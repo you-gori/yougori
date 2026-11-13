@@ -566,16 +566,28 @@ impl Harness {
         }
     }
 
-    /// Reopens the catalog from its root with a fresh verifier.
-    pub fn reopen(&mut self) {
-        let mut registry = VerifierRegistry::new();
-        registry
-            .register(Box::new(self.importer.verifier()))
-            .unwrap();
+    /// Reopens the catalog from its root with a fresh verifier, as a restart would: the open
+    /// catalog is closed first, since one catalog at a time holds a root.
+    pub fn reopen(self) -> Self {
         let config = self.catalog.config().clone();
-        let (catalog, _) =
-            Catalog::open(self.dir.path(), config, registry, self.clock.clone()).unwrap();
-        self.catalog = catalog;
+        let Self {
+            dir,
+            catalog,
+            clock,
+            importer,
+            publisher,
+        } = self;
+        drop(catalog);
+        let mut registry = VerifierRegistry::new();
+        registry.register(Box::new(importer.verifier())).unwrap();
+        let (catalog, _) = Catalog::open(dir.path(), config, registry, clock.clone()).unwrap();
+        Self {
+            dir,
+            catalog,
+            clock,
+            importer,
+            publisher,
+        }
     }
 
     /// A request for `fx` into `scope`, signed by the trusted publisher.

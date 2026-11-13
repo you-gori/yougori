@@ -1,20 +1,27 @@
 "use strict";
-let sandboxTimer;
+let sandboxTimer, sandboxRound=0, sandboxesShown=false;
 
-async function renderSandboxes() {
+// The main page's Sandboxes column. It shows when a computer offers sandboxes, or when someone already
+// has one, and keeps its last answer while the page is drawn again, so the columns do not jump.
+function showSandboxes() {
   clearTimeout(sandboxTimer);
-  header('Sandboxes','Choose an online computer. You can use only the CPU and RAM its owner contributes.');
-  $('#view').innerHTML='<div id="sandbox-computers" class="resource-grid"></div><div id="my-sandboxes"></div><div id="sandbox-events"></div>';
-  await refreshSandboxes();
+  const body=$('#sandboxes-body'); if(!body) return;
+  $('#sandboxes-column').hidden=!sandboxesShown;
+  body.innerHTML='<div id="sandbox-computers" class="resource-grid"></div><div id="my-sandboxes"></div><div id="sandbox-events"></div>';
+  refreshSandboxes(++sandboxRound);
 }
 
-async function refreshSandboxes() {
+// One round of updates at a time: drawing the main page again starts a new round and ends the old one.
+async function refreshSandboxes(round) {
   clearTimeout(sandboxTimer);
-  if(currentRoute()[0]!=='sandboxes') return;
+  const current=()=>round===sandboxRound && !!$('#sandboxes-body');
+  if(!current()) return;
   try {
     const catalog=await api('/api/sandboxes');
     const own=session.user ? await api('/api/grid') : {vms:[],jobs:[]};
-    if(currentRoute()[0]!=='sandboxes')return;
+    if(!current())return;
+    sandboxesShown=(catalog.enabled && catalog.nodes.length>0) || own.vms.length>0;
+    if($('#sandboxes-column').hidden===sandboxesShown) { $('#sandboxes-column').hidden=!sandboxesShown; fitColumns(); }
     const area=$('#sandbox-computers');
     // Keep an in-progress resource choice intact during live updates.
     if(!area.querySelector('input:focus,button:disabled[data-submitting]')) {
@@ -51,6 +58,6 @@ async function refreshSandboxes() {
       });
     }
     $('#sandbox-events').innerHTML=own.jobs.length?panel('Sandbox activity',own.jobs.slice(0,12).map(j=>`<div class="source"><div><strong>${esc(j.kind)} · ${esc(j.state)}</strong>${j.result.output?`<pre class="code">${esc(j.result.output)}</pre>`:''}${j.result.error?`<p class="error">${esc(j.result.error)}</p>`:''}</div></div>`).join('')):'';
-  } catch(error){if(currentRoute()[0]==='sandboxes')notice(error.message);}
-  finally{if(currentRoute()[0]==='sandboxes')sandboxTimer=setTimeout(refreshSandboxes,3000);}
+  } catch(error){if(current() && sandboxesShown)notice(error.message);}
+  finally{if(current())sandboxTimer=setTimeout(()=>refreshSandboxes(round),3000);}
 }

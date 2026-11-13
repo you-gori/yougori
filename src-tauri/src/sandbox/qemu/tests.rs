@@ -211,6 +211,7 @@ pub(super) fn inputs(os: OsKind, architecture: Architecture, launch: &str) -> Qe
             .then(|| GuestCid::new(3).unwrap()),
         egress_endpoints: Vec::new(),
         workload_image: None,
+        targets: None,
     }
 }
 
@@ -904,6 +905,59 @@ fn full_internet_is_an_explicit_checked_profile_variant() {
         backend.push_str(",hostfwd=tcp::2222-:22");
         assert!(check_observed(&observed(injected), &online).is_err());
         assert!(check_observed(&with_extra(&online, &["-device", "virtio-net-device,netdev=other"]), &online).is_err());
+    }
+}
+
+/// A network card's every frame goes through the host's filter: its four sockets in the
+/// private directory and the two redirectors are part of the profile, so a process running the
+/// card without them, or with another filter, is not the profile. Targets ride on the plan to
+/// the host's filter (the vector is the card's either way), need a card, and must be the
+/// request's own.
+#[test]
+fn every_frame_of_a_network_card_passes_the_host_filter_and_targets_need_a_card() {
+    use crate::sandbox::backend::{NetworkChannel, NetworkTarget};
+    for mut fixture in [windows(), linux()] {
+        fixture.request.required.network.channels.insert(NetworkChannel::Internet);
+        let online = fixture.profile();
+        let argv = online.argv();
+        let text = argv.join(" ");
+        for (index, socket) in online.control().network_sockets().iter().enumerate() {
+            assert!(
+                text.contains(&format!("socket,id=net{index},path={},server=on,wait=off", socket.as_str())),
+                "{text}"
+            );
+        }
+        assert!(text.contains("filter-redirector,id=net-rx,netdev=internet,queue=rx,outdev=net0,indev=net1"));
+        assert!(text.contains("filter-redirector,id=net-tx,netdev=internet,queue=tx,outdev=net2,indev=net3"));
+        let mut unfiltered = Vec::new();
+        let mut tokens = argv.iter();
+        while let Some(token) = tokens.next() {
+            if token == "-object" {
+                tokens.next();
+            } else {
+                unfiltered.push(token.clone());
+            }
+        }
+        assert!(check_observed(&observed(unfiltered), &online).is_err(), "a card without the filter");
+        assert!(
+            check_observed(&with_extra(&online, &["-object", "filter-dump,id=dump,netdev=internet,file=x"]), &online).is_err(),
+            "another filter on the card"
+        );
+        let target = NetworkTarget {
+            host: "staging.example.com".into(),
+            addresses: vec!["93.184.216.34".parse().unwrap()],
+            ports: vec![443],
+        };
+        fixture.request.required.targets = Some(vec![target.clone()]);
+        fixture.inputs.targets = Some(vec![target.clone()]);
+        let plan = fixture.plan().unwrap();
+        assert_eq!(plan.targets(), Some(&[target.clone()][..]));
+        assert_eq!(plan.profile().argv(), argv, "the vector is the card's, whatever it reaches");
+        fixture.inputs.targets = None;
+        assert!(matches!(fixture.plan(), Err(ProfileRefusal::NetworkTargets { .. })));
+        fixture.inputs.targets = Some(vec![target]);
+        fixture.request.required.network.channels.remove(&NetworkChannel::Internet);
+        assert!(matches!(fixture.plan(), Err(ProfileRefusal::NetworkTargets { .. })));
     }
 }
 

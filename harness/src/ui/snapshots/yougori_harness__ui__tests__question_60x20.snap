@@ -1,0 +1,25 @@
+---
+source: src/ui/tests.rs
+expression: narrow
+---
+
+  ▀▄ ▄▀ ▄▀▀▄ █  █ ▄▀▀▀ ▄▀▀▄ █▀▀▄ ▀█▀
+    █   █  █ █  █ █ ▀█ █  █ █▀█   █     OpenCode  v1.0.0
+    ▀    ▀▀   ▀▀   ▀▀▀  ▀▀  ▀  ▀ ▀▀▀    qwen3-coder-30b
+
+  OpenCode 1.0 · build mode
+
+› Add a database
+
+
+
+
+
+◆  Which database should the app use?
+│  ○ 1  PostgreSQL
+│  ● 2  SQLite
+│  ○ 3  MySQL
+│  ○ 4  Type an answer
+└  ↑↓ move · 1-4 choose · enter confirm · esc dismiss
+ ⠴ 1.0s · esc to stop · OpenCode · qwen3-coder-30b · Build
+[no cursor]

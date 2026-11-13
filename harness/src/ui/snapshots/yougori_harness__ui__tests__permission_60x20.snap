@@ -1,0 +1,25 @@
+---
+source: src/ui/tests.rs
+expression: narrow
+---
+
+  ▀▄ ▄▀ ▄▀▀▄ █  █ ▄▀▀▀ ▄▀▀▄ █▀▀▄ ▀█▀
+    █   █  █ █  █ █ ▀█ █  █ █▀█   █     OpenCode  v1.0.0
+    ▀    ▀▀   ▀▀   ▀▀▀  ▀▀  ▀  ▀ ▀▀▀    qwen3-coder-30b
+
+  OpenCode 1.0 · build mode
+
+› Test everything
+
+  ○ Run    cargo test --workspace               waiting 0.1s
+◆  Run cargo test --workspace
+│  cargo test --workspace
+│  in /workspace
+│
+│  ● 1  Allow once
+│  ○ 2  Always allow cargo test
+│  ○ 3  Reject
+│  ○ 4  Always reject
+└  ↑↓ move · 1-4 choose · enter confirm · esc dismiss
+ ⠴ 0.2s · esc to stop · OpenCode · qwen3-coder-30b · Build
+[no cursor]

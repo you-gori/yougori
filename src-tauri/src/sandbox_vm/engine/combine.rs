@@ -3,11 +3,12 @@
 //!
 //! - **preview** compares the two sandboxes as they run: the guest's own OS identity read inside
 //!   each guest (`/etc/os-release`, `uname -m`, `uname -r`), their images, the CPU and memory
-//!   they reserve, their workspaces file by file, the services, connection endpoints and routes
-//!   they declared, and the host-file grants they hold. It shows the combined VM those make (the
-//!   sum of both allocations, with GPU access preserved when requested), every conflict
-//!   that needs the owner's decision, whether the host can admit the result once both originals
-//!   release theirs, and what is not carried. It changes nothing, and names itself by a digest.
+//!   they reserve, their workspaces file by file, the services, connection endpoints, routes and
+//!   network targets they declared, and the host-file grants they hold. It shows the combined VM
+//!   those make (the sum of both allocations, with GPU access preserved when requested, every
+//!   target either named), every conflict that needs the owner's decision, whether the host can
+//!   admit the result once both originals release theirs, and what is not carried. It changes
+//!   nothing, and names itself by a digest.
 //! - **start** applies exactly the previewed combination (the digest must still match) with the
 //!   owner's decisions: each original's staged files are copied (and checked) into the combined
 //!   workspace while both still run, both originals stop (a stop ends each guest's access to its
@@ -444,6 +445,7 @@ fn preview(production: &Production, a: &SandboxId, b: &SandboxId, decisions: &Va
         });
         if first.params["gpu"] == true || second.params["gpu"] == true { params["gpu"] = json!(true); }
         if first.params["internet"] == true || second.params["internet"] == true { params["internet"] = json!(true); }
+        if let Some(targets) = combined_targets(&first.params, &second.params) { params["targets"] = json!(targets); }
         let grids: std::collections::BTreeSet<_> = [&first.params, &second.params].into_iter()
             .filter_map(|p|p["gridHosting"].as_array()).flatten().filter_map(Value::as_str).collect();
         if !grids.is_empty() { params["gridHosting"] = json!(grids); }
@@ -453,7 +455,11 @@ fn preview(production: &Production, a: &SandboxId, b: &SandboxId, decisions: &Va
         if let Some(seconds) = limit("lifetimeSeconds") { params["lifetimeSeconds"] = json!(seconds); }
         params
     };
-    if let Err(reason) = super::network::launch_internet(&combined_params) {
+    // Targets with the whole internet, routes or a GPU cannot be one VM's card; more targets
+    // than one launch names cannot either.
+    if let Err(reason) = super::network::launch_internet(&combined_params)
+        .and_then(|_| super::network::launch_targets(&combined_params))
+    {
         reasons.push(reason);
     }
     let describe = |source: &Source| json!({
@@ -462,6 +468,7 @@ fn preview(production: &Production, a: &SandboxId, b: &SandboxId, decisions: &Va
         "workspace": source.folder.as_ref().map(|folder| json!({"folder": folder, "files": source.files.len(),
             "bytes": source.files.values().map(|(_, size)| size).sum::<u64>()})),
         "publish": source.params.get("publish"), "connect": source.params.get("connect"), "routes": source.params.get("routes"),
+        "targets": source.params.get("targets"),
         "grants": {"lasting": source.grants.len(), "oneTime": source.one_time, "pendingRequests": source.pending},
     });
     let mut value = json!({
@@ -487,6 +494,21 @@ fn preview(production: &Production, a: &SandboxId, b: &SandboxId, decisions: &Va
     });
     value["digest"] = json!(preview_digest(&first.id, &second.id, &value, decisions)?);
     Ok(value)
+}
+
+/// The targets the combined VM's network card is held to: each one either source's launch
+/// named, once, in the order named (the launch resolves them again). `None` when neither
+/// named any: the combined VM then gets no card for targets.
+fn combined_targets(first: &Value, second: &Value) -> Option<Vec<Value>> {
+    let mut targets: Vec<Value> = Vec::new();
+    for named in [first, second].into_iter().filter_map(|params| params.get("targets").and_then(Value::as_array)) {
+        for target in named {
+            if !targets.contains(target) {
+                targets.push(target.clone());
+            }
+        }
+    }
+    (!targets.is_empty()).then_some(targets)
 }
 
 /// The lease limit the combined VM takes from the sources' `idleSeconds` or `lifetimeSeconds`
@@ -1045,6 +1067,24 @@ mod tests {
         // A source's own copy of such a file, under its folder, is the owner's and still counts.
         assert!(!is_setup_package("first/yougori.py") && !is_setup_package("first/.yougori/notes.txt"));
         assert!(is_setup_package(".yougori/application.log") && is_setup_package("yougori.py"));
+    }
+
+    #[test]
+    fn the_combined_vm_keeps_every_target_either_source_named() {
+        let first = json!({"targets": ["staging.example.com:443", "192.168.1.50:8080"]});
+        let second = json!({"targets": ["192.168.1.50:8080", "10.1.2.3"], "cpu": 2});
+        assert_eq!(
+            combined_targets(&first, &second),
+            Some(vec![json!("staging.example.com:443"), json!("192.168.1.50:8080"), json!("10.1.2.3")])
+        );
+        assert_eq!(combined_targets(&json!({}), &second), Some(vec![json!("192.168.1.50:8080"), json!("10.1.2.3")]));
+        assert_eq!(combined_targets(&json!({"internet": true}), &json!({"targets": null})), None);
+        // Targets beside the whole internet, routes or a GPU are no one VM's card.
+        for other in [json!({"internet": true}), json!({"routes": [{}]}), json!({"gpu": true})] {
+            let mut combined = other.clone();
+            combined["targets"] = json!(combined_targets(&first, &other));
+            assert!(super::super::network::launch_internet(&combined).is_err(), "{combined}");
+        }
     }
 
     #[test]

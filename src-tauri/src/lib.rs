@@ -621,8 +621,9 @@ pub fn run() {
             // anything can open the service.
             trust_roots::use_data_folder(&app_directory);
             // The catalog's default root and the ledger history's default journal live here
-            // too, unless their settings say otherwise.
-            catalog_service::use_data_folder(&app_directory);
+            // too, unless their settings say otherwise. The catalog also learns the installed
+            // engine's data folder: a disposable acceptance engine never opens a catalog there.
+            catalog_service::use_data_folder(&app_directory, app.path().app_data_dir().ok().as_deref());
             ledger_history::use_data_folder(&app_directory);
             let resource_directory = resource_dir(app.handle()).map_err(std::io::Error::other)?;
             let store = PlatformStore::load(app_directory.join("platform-state.json"))

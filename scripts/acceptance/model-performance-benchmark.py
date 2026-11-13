@@ -67,7 +67,7 @@ class Run(combined.Combined):
         super().__init__(args)
         self.args=args;self.created=None;self.requests=[];self.groups={};self.write_lock=threading.Lock()
         self.catalog_root=args.catalog_root.resolve()
-        self.env['YOUGORI_CATALOG_ROOT']=str(self.catalog_root)
+        self.env['YOUGORI_ACCEPTANCE_CATALOG_ROOT']=str(self.catalog_root)
         self.env['YOUGORI_CATALOG_QUOTA_BYTES']=str(40*1024**3)
         self.sampler=Sampler(self.root/'gpu-samples.jsonl')
         self.measurement_active=False

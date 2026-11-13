@@ -218,6 +218,59 @@ mod launch_resource_tests {
             );
         }
     }
+
+    #[test]
+    fn a_memory_refusal_says_the_wsl_cache_was_asked_back_only_when_it_was() {
+        use crate::foundation::coordination::{CapacityLimit, CapacityRefusal, LaunchFailure, ResourceKind, RetryProspect};
+        let error = crate::sandbox::vm_service::VmServiceError::LaunchRolledBack {
+            failure: LaunchFailure::Capacity {
+                refusal: CapacityRefusal::Insufficient {
+                    resource: ResourceKind::HostMemoryBytes,
+                    limit: CapacityLimit::Host,
+                    requested: 8 << 30,
+                    available: 3 << 30,
+                    retry: RetryProspect::CanProgress,
+                },
+            },
+        };
+        let refusal = memory_refusal(&error).unwrap();
+        assert!(refusal.starts_with("The launch was refused: not enough free memory on this computer. This VM needs 8.0 GB; Yougori can give VMs 3.0 GB now"), "{refusal}");
+        assert!(!refusal.contains("WSL"), "{refusal}");
+        assert_eq!(after_reclaim(refusal.clone(), false), refusal);
+        assert_eq!(after_reclaim(refusal.clone(), true), format!("{refusal} Models running in WSL 2 were asked to give back their file cache first."));
+        // Another failure is never said to follow a cache request.
+        let other = "The launch was refused: the guest did not boot".to_owned();
+        assert_eq!(after_reclaim(other.clone(), true), other);
+    }
+
+    #[tokio::test]
+    async fn a_failed_look_at_the_hosts_memory_keeps_the_launch_waiting_for_room() {
+        let shutdown = tokio_util::sync::CancellationToken::new();
+        let fits = |free: &u64| *free >= 8;
+        // Refused twice as out of order (another launch's newer reading came first), then room.
+        let looks = std::sync::Mutex::new(vec![Ok(8u64), Err("out of order".to_owned()), Err("out of order".to_owned())]);
+        let observe = || {
+            let next = looks.lock().unwrap().pop().unwrap_or(Ok(8));
+            async move { next }
+        };
+        assert_eq!(wait_for_room(1u64, Duration::from_secs(5), Duration::from_millis(5), &shutdown, observe, fits).await, Ok(8));
+        // Looks that keep failing leave the last good reading when the window ends.
+        let failing = || async { Err::<u64, String>("probe slower than its freshness".into()) };
+        assert_eq!(wait_for_room(1u64, Duration::from_millis(50), Duration::from_millis(5), &shutdown, failing, fits).await, Ok(1));
+        // A look the engine's shutdown cancelled ends the wait.
+        shutdown.cancel();
+        assert_eq!(wait_for_room(1u64, Duration::from_secs(5), Duration::from_millis(5), &shutdown, failing, fits).await,
+            Err("probe slower than its freshness".to_owned()));
+    }
+
+    #[test]
+    fn a_launch_with_an_image_waits_for_its_layer_buffers_too() {
+        // A harness VM of 4 GiB attaches its image with 1 GiB of host buffers beside it: with 4.9
+        // GiB free it fitted its VM and was then refused its image (11 Nov 2026).
+        let gib = 1u64 << 30;
+        assert_eq!(launch_host_bytes(4 * gib, true), 5 * gib);
+        assert_eq!(launch_host_bytes(4 * gib, false), 4 * gib);
+    }
 }
 
 pub(super) const GUEST_VCPUS: u16 = 1;
@@ -1716,10 +1769,10 @@ impl Production {
             );
         }
         let id = outcome.map_err(|error| {
-            format!(
+            memory_refusal(&error).unwrap_or_else(|| format!(
                 "The launch was refused: {error} ({})",
                 serde_json::to_string(&error).unwrap_or_default()
-            )
+            ))
         })?;
         // Its guest's file bodies move under the authority the launch granted.
         self.refresh_authorities();
@@ -1860,6 +1913,7 @@ impl Production {
             gpu: false,
             gpu_memory: Vec::new(),
             internet: false,
+            targets: None,
             owner_session: false,
             tenant: TenantId::new(TENANT).map_err(|error| error.to_string())?,
             resources: VmResources {
@@ -3413,8 +3467,81 @@ async fn blocking<T: Send + 'static>(
 /// the parameters checked, the host's capacity observed again, the VM launched, and its
 /// parameters kept beside it while it runs (`launches/<execution>.json`, no secret is among
 /// them) so a combine can merge them, or launch an original again after a failed combine.
+/// A launch refused for host memory, in words a person can act on (the service's own text is the
+/// ledger's arithmetic). Keeps the "The launch was refused" start that setups rely on.
+fn memory_refusal(error: &crate::sandbox::vm_service::VmServiceError) -> Option<String> {
+    use crate::foundation::coordination::{CapacityRefusal, LaunchFailure, ResourceKind};
+    let crate::sandbox::vm_service::VmServiceError::LaunchRolledBack {
+        failure: LaunchFailure::Capacity {
+            refusal: CapacityRefusal::Insufficient { resource: ResourceKind::HostMemoryBytes, requested, available, .. },
+        },
+    } = error else {
+        return None;
+    };
+    let gb = |bytes: u64| bytes as f64 / (1u64 << 30) as f64;
+    Some(format!(
+        "{MEMORY_REFUSED} This VM needs {:.1} GB; Yougori can give VMs {:.1} GB now (it keeps a tenth of this computer's memory for {}, and running VMs keep theirs). Stop a model or VM you are not using, or close large programs, then start it again, or give this VM less memory.",
+        gb(*requested),
+        gb(*available),
+        if cfg!(windows) { "Windows" } else { "the system" }
+    ))
+}
+
+/// How a launch refused for host memory begins ([`memory_refusal`]).
+const MEMORY_REFUSED: &str = "The launch was refused: not enough free memory on this computer.";
+
+/// The host memory a launch waits for: its VM's, and with an image the layer buffers its attach
+/// holds beside the VM, so a launch that fits its VM is not then refused its image.
+fn launch_host_bytes(memory_bytes: u64, attaches_image: bool) -> u64 {
+    memory_bytes + if attaches_image { images::IMAGE_HOST_BUFFER_BYTES } else { 0 }
+}
+
+/// Looks at the host's memory again every `interval` until `fits` says the launch fits or `window`
+/// ends, and returns the ledger to admit on. A look that fails (another launch's newer reading was
+/// published first, or a probe was slower than its freshness) ends no launch: `capacity` is the
+/// host's one ledger with the newest reading in it, and admission checks its freshness itself. A
+/// look the engine's shutdown cancelled ends the wait with its error.
+async fn wait_for_room<L, Fut>(
+    mut capacity: L,
+    window: Duration,
+    interval: Duration,
+    shutdown: &tokio_util::sync::CancellationToken,
+    observe: impl Fn() -> Fut,
+    fits: impl Fn(&L) -> bool,
+) -> Result<L, String>
+where
+    Fut: std::future::Future<Output = Result<L, String>>,
+{
+    let deadline = tokio::time::Instant::now() + window;
+    while tokio::time::Instant::now() < deadline {
+        tokio::time::sleep(interval).await;
+        match observe().await {
+            Ok(next) => capacity = next,
+            Err(error) if shutdown.is_cancelled() => return Err(error),
+            Err(_) => {}
+        }
+        if fits(&capacity) {
+            break;
+        }
+    }
+    Ok(capacity)
+}
+
+/// A memory refusal of a launch that asked the models in WSL 2 for their file cache first says so;
+/// every other launch (no CUDA runtime running, a launch that fitted at first, a launch through
+/// another path) asked nothing, and its refusal does not claim it did.
+fn after_reclaim(error: String, reclaimed: bool) -> String {
+    if reclaimed && error.starts_with(MEMORY_REFUSED) {
+        format!("{error} Models running in WSL 2 were asked to give back their file cache first.")
+    } else {
+        error
+    }
+}
+
 async fn launch_from(app: &AppHandle, production: &Arc<Production>, params: Value) -> Result<Value, String> {
         let internet = network::launch_internet(&params)?;
+        // Targets add a network card held to them alone (engine/network.rs).
+        let target_requests = network::launch_targets(&params)?;
         // An attended session of the owner (an inference harness): owner-only publications
         // with a larger release account (vm_service::OWNER_SESSION_RELEASE_BYTES).
         let owner_session = match params.get("ownerSession") {
@@ -3476,14 +3603,42 @@ async fn launch_from(app: &AppHandle, production: &Arc<Production>, params: Valu
             .collect::<Result<_, _>>()
             .map_err(|error| format!("routes: {error}"))?;
         check_endpoints(&egress_endpoints).map_err(|error| format!("routes: {error}"))?;
+        // The targets' names resolve on this computer now, before the capacity reading
+        // below, which lapses after a few seconds.
+        let targets = match target_requests {
+            Some(requests) => Some(network::resolve_on_this_computer(requests).await?),
+            None => None,
+        };
+        let internet = internet || targets.is_some();
         // The host's capacity observation lapses after a few seconds (the models path
         // observes again before every admission); observe again so the ledger admits
         // on a current reading instead of refusing `NotObserved`.
-        let capacity = if gpu {
-            crate::model_runner::refresh_gpu_capacity(&crate::automation::shutdown_signal(app)).await?
-        } else {
-            crate::model_runner::refresh_host_capacity(&crate::automation::shutdown_signal(app)).await?
+        let shutdown = crate::automation::shutdown_signal(app);
+        let observe = || async {
+            if gpu {
+                crate::model_runner::refresh_gpu_capacity(&shutdown).await
+            } else {
+                crate::model_runner::refresh_host_capacity(&shutdown).await
+            }
         };
+        let mut capacity = observe().await?;
+        // Models run in WSL 2, which keeps the weights and image layers it read as its own memory:
+        // a VM that does not fit asks it to give back that cache, then looks again for a while
+        // before the launch goes on (and is refused if it still does not fit).
+        let host_ram = ResourceKey::Host(HostResource::Ram);
+        let needed = launch_host_bytes(memory_bytes, string(&params, "image").is_some());
+        let fits = |ledger: &crate::foundation::coordination::SharedLedger<crate::foundation::ids::SystemClock>| {
+            ledger.lock().ok().and_then(|ledger| ledger.available(host_ram)).is_some_and(|free| free >= needed)
+        };
+        let mut reclaimed = false;
+        if !fits(&capacity) {
+            use tauri::Manager;
+            reclaimed = app.state::<crate::runtime::RuntimeManager>().reclaim_wsl_page_cache().await;
+            eprintln!("VM launch: {} MiB of host memory is not free now; WSL page cache {}", memory_bytes >> 20,
+                if reclaimed { "was asked back" } else { "could not be asked back (no running CUDA runtime, or WSL did not answer)" });
+            let window = Duration::from_secs(if reclaimed { 30 } else { 10 });
+            capacity = wait_for_room(capacity, window, Duration::from_secs(1), &shutdown, observe, fits).await?;
+        }
         let mut gpu_memory = Vec::new();
         if gpu {
             let mut ledger = capacity.lock().map_err(|_| "The host ledger is unavailable")?;
@@ -3535,6 +3690,7 @@ async fn launch_from(app: &AppHandle, production: &Arc<Production>, params: Valu
             gpu,
             gpu_memory,
             internet,
+            targets: targets.clone(),
             owner_session,
             tenant: TenantId::new(TENANT).map_err(|error| error.to_string())?,
             resources: VmResources {
@@ -3561,9 +3717,16 @@ async fn launch_from(app: &AppHandle, production: &Arc<Production>, params: Valu
             }?;
             Ok((id, launched))
         })
-        .await?;
+        .await
+        .map_err(|error| after_reclaim(error, reclaimed))?;
         if !remote_bootstrap {
             production.record_launch(&id, &kept);
+        }
+        let mut launched = launched;
+        if let (Some(targets), Some(view)) = (&targets, launched.as_object_mut()) {
+            // What the card is held to, as resolved: the launcher shows it and an older
+            // engine, which would not hold it, leaves it out.
+            view.insert("reach".into(), json!({ "targets": targets }));
         }
         Ok(launched)
 }
@@ -3579,6 +3742,7 @@ pub(crate) async fn dispatch(
     // host probes or supervisor recovery. launch_from also checks combine calls.
     if action == "launch" {
         network::launch_internet(&params)?;
+        network::launch_targets(&params)?;
     }
     let production = production(&app).await?;
     match action.as_str() {
@@ -3591,7 +3755,9 @@ pub(crate) async fn dispatch(
             };
             #[cfg(not(windows))]
             let gpu = json!({"available":false,"reason":"This VM backend does not yet provide direct GPU access."});
-            Ok(json!({"gpu":gpu}))
+            // `targets`: a launch may hold a VM's network card to named hosts and ports,
+            // enforced by the host's filter; an engine without it leaves this out.
+            Ok(json!({"gpu":gpu,"targets":{"available":true,"gpu":false}}))
         }).await,
         "template" => blocking(Arc::clone(&production), move |p| p.capture_template(&params)).await,
         "application" => blocking(Arc::clone(&production), move |p| p.start_application(&params)).await,

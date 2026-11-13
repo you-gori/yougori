@@ -935,6 +935,7 @@ fn requests_outside_their_bounds_are_refused_before_anything_happens() {
             gpu: false,
             gpu_memory: Vec::new(),
             internet: false,
+            targets: None,
             owner_session: false,
         workload_image: None,
         tenant: crate::sandbox::host::fakes::tenant(),
@@ -978,6 +979,44 @@ fn requests_outside_their_bounds_are_refused_before_anything_happens() {
         ),
         Err(_)
     ));
+}
+
+/// A launch's targets hold its network card: they need the card, are never given to a GPU VM
+/// (whose card the host's filter does not see), and reach the backend's request and the record
+/// beside the internet channel.
+#[test]
+fn targets_need_a_network_card_and_reach_the_launch_record() {
+    use crate::sandbox::backend::{NetworkChannel, NetworkTarget};
+    let target = NetworkTarget {
+        host: "192.168.1.50".into(),
+        addresses: vec![std::net::Ipv4Addr::new(192, 168, 1, 50)],
+        ports: vec![8080],
+    };
+    let mut harness = Harness::new();
+    for (internet, gpu) in [(false, false), (true, true)] {
+        let mut spec = Harness::spec();
+        spec.internet = internet;
+        spec.gpu = gpu;
+        spec.targets = Some(vec![target.clone()]);
+        assert!(matches!(
+            harness.service().launch(spec).unwrap_err(),
+            VmServiceError::Connection { .. }
+        ));
+    }
+    assert!(harness.world().launches.is_empty());
+    harness.guest(0, Behaviour::default());
+    let mut spec = Harness::spec();
+    spec.internet = true;
+    spec.targets = Some(vec![target.clone()]);
+    harness.service().launch(spec).unwrap();
+    let records = harness.service().launch_records();
+    assert_eq!(records.len(), 1);
+    assert_eq!(records[0].required().targets, Some(vec![target]));
+    assert!(records[0]
+        .required()
+        .network
+        .channels
+        .contains(&NetworkChannel::Internet));
 }
 
 #[test]
@@ -1740,10 +1779,14 @@ fn a_sandbox_connection_needs_a_grant_and_carries_a_half_closed_exchange() {
             .is_err(),
         "an endpoint is granted one service at a time"
     );
-    harness.wait_until("the answer and its end", || {
+    // The service answers as soon as the request arrives, so the answer may come back before
+    // the program's end of writing reaches the service: wait for both.
+    harness.wait_until("the answer and its end, and the end of writing at the service", || {
         harness.service().pump_sessions();
         let state = harness.guests[2].state();
-        state.egress_received == INGRESS_RESPONSE && state.egress_ended
+        state.egress_received == INGRESS_RESPONSE
+            && state.egress_ended
+            && !harness.guests[0].state().ingress_ended.is_empty()
     });
     let served = harness.guests[0].state();
     assert_eq!(

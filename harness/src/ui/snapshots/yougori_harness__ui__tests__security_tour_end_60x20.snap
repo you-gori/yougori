@@ -1,0 +1,25 @@
+---
+source: src/ui/tests.rs
+expression: narrow
+---
+      [INFO] GET parameter 'q' is 'AND boolean-based blind'…
+      [INFO] the back-end DBMS is PostgreSQL
+      exit 0
+  ● Critical Admin panel reachable without login
+             https://shop.example.test/admin
+             The admin dashboard answers 200 without a
+             session and lists the orders.
+  ◇ Downloading the wordlist  5.0 MB / 5.0 MB      done 0.1s
+  ◇ Report saved  Assessment report  reports/strix-shop.exa…
+    5 findings: 1 critical, 1 high, 1 medium, 1 low, 1 info.
+    The admin panel and the search need fixing first.
+
+  Done. Fix first: the open admin panel, then the SQL
+  injection in the search. The report has the steps to
+  reproduce each finding.
+  Findings  ● 1 critical  ● 1 high  ● 1 medium  ● 1 low  ● …
+╭──────────────────────────────────────────────────────────╮
+│ › Tell Strix what to test                                │
+╰──────────────────────────────────────────────────────────╯
+ Strix · unsloth/gemma-4-26B-A4B-it-GGUF · 64% context
+[cursor 4,17]

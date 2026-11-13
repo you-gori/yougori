@@ -126,6 +126,12 @@ come from `site/categories.json`; add categories there and assign harnesses in
   invalid counts release the hold and remain explicitly unbilled. Keep checkout
   inline. Never test by signing/broadcasting real transfers. A saved wallet alone
   is not evidence that a payment was received; fixtures are not live paid evidence.
+- `site/subscriptions.py` (with `payments.py` and `payments-ui.js`): an on/off switch and one to
+  five plans bought from the balance for 30 days, each with its models and a token limit that
+  resets every 5 hours or every week. Subscribers see only the share used, never the tokens.
+  Included requests reserve nothing and count measured tokens in their window; past the limit,
+  and for other models, the balance pays. Paid periods keep their plan's terms and run to their
+  end when switched off. Read `docs/payments.md`, Subscriptions.
 - `site/control_panel.py`, `control-ui.js`: admin-only bounded telemetry, charts,
   presence and activity. Missing sensors remain unknown; never label cached data
   as a fresh host reading. Public capacity responses exclude private guest details.

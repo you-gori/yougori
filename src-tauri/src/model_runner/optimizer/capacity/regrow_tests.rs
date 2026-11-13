@@ -18,7 +18,7 @@ fn trimmed_beside_b() -> (Accounting<Arc<ManualClock>>, ContextDemand, GrantTerm
         .unwrap();
     let before = sample(GIB);
     let (_, mut a) = world(&before);
-    a.settle_and_admit(&before, "a", Some(stamped.demand))
+    a.settle_and_admit(&before, "a", Some(stamped.demand), None)
         .unwrap();
     let resident_facts = BTreeMap::from([("a".to_owned(), (facts, stamped.context))]);
     let now = sample(3 * GIB);

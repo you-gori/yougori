@@ -1,0 +1,35 @@
+---
+source: src/ui/tests.rs
+expression: wide
+---
+
+  ▀▄ ▄▀ ▄▀▀▄ █  █ ▄▀▀▀ ▄▀▀▄ █▀▀▄ ▀█▀
+    █   █  █ █  █ █ ▀█ █  █ █▀█   █     OpenCode  v1.0.0
+    ▀    ▀▀   ▀▀   ▀▀▀  ▀▀  ▀  ▀ ▀▀▀    qwen3-coder-30b
+
+  OpenCode 1.0 · build mode
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+ › /new        Start a new session
+   /sessions   Open an earlier session
+   /compact    Summarise the conversation
+   /review     Review the changes · then type what to review
+╭──────────────────────────────────────────────────────────────────────────────────────────────────╮
+│ › /                                                                                              │
+╰──────────────────────────────────────────────────────────────────────────────────────────────────╯
+ enter send   shift+enter new line   / commands   tab mode   ctrl+p menu   ctrl+c quit
+ OpenCode · qwen3-coder-30b · 10% context · Build · reaches only the inference
+[cursor 5,26]

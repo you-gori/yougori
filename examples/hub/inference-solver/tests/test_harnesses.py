@@ -45,7 +45,8 @@ class Harnesses(unittest.TestCase):
         specs = harness_download.catalog()
         with tempfile.TemporaryDirectory() as folder:
             for name, spec in specs.items():
-                if spec.get("blocked"):
+                # The Yougori harness starts its own screen (runtime.run_yougori), not a terminal client.
+                if spec.get("blocked") or name == harness_download.YOUGORI:
                     continue
                 root = Path(folder) / name
                 argv, env = profiles.configure(name, "source:model", [{"id": "source:model"}], root)
@@ -55,8 +56,84 @@ class Harnesses(unittest.TestCase):
                 self.assertEqual(env["HOME"], str(root))
                 self.assertNotIn("AWS_ACCESS_KEY_ID", env)
                 self.assertNotIn("SSH_AUTH_SOCK", env)
+                if name in ("opencode", "kilo"):
+                    # The window Yougori's model servers serve and their longest reply, as Pi has:
+                    # the harness compacts its conversation before the model refuses it.
+                    config = json.loads(env[name.upper() + "_CONFIG_CONTENT"])
+                    self.assertEqual(config["provider"]["solver"]["models"],
+                                     {"source:model": {"name": "source:model", "limit": {"context": 32768, "output": 4096}}})
                 with self.assertRaises(ValueError):
                     profiles.configure(name, "not-from-this-server", [], root)
+
+    def test_openhands_clones_its_public_skills_from_an_empty_local_repository(self):
+        """OpenHands runs `git clone --depth 1 --branch main https://github.com/OpenHands/extensions`
+        at every start and prints an ERROR when it fails, as it does in a VM that reaches only the
+        inference. With its profile's environment the same command clones a local repository with
+        an empty skills folder, and a later start's fetch also succeeds, without the network."""
+        import os
+        import shutil
+        import subprocess
+        if shutil.which("git") is None:
+            self.skipTest("git is not installed")
+        with tempfile.TemporaryDirectory() as folder:
+            root = Path(folder) / "home"
+            _, env = profiles.configure("openhands", "source:model", [{"id": "source:model"}], root)
+            self.assertEqual((env["GIT_CONFIG_COUNT"], env["GIT_CONFIG_VALUE_0"]), ("1", "https://github.com/OpenHands/extensions"))
+            git = {**os.environ, **{k: v for k, v in env.items() if k.startswith("GIT_")}, "GIT_TERMINAL_PROMPT": "0"}
+            cache = Path(folder) / "public-skills"
+            clone = subprocess.run(["git", "clone", "--depth", "1", "--branch", "main", "https://github.com/OpenHands/extensions", str(cache)],
+                                   env=git, capture_output=True, text=True, timeout=60)
+            self.assertEqual(clone.returncode, 0, clone.stderr)
+            self.assertTrue((cache / "skills").is_dir())
+            self.assertEqual([p.name for p in (cache / "skills").iterdir()], [".keep"])
+            fetch = subprocess.run(["git", "fetch", "origin"], cwd=cache, env=git, capture_output=True, text=True, timeout=60)
+            self.assertEqual(fetch.returncode, 0, fetch.stderr)
+            # A second start in the same home keeps the repository it made.
+            self.assertEqual(profiles.configure("openhands", "source:model", [{"id": "source:model"}], root)[1]["GIT_CONFIG_KEY_0"], env["GIT_CONFIG_KEY_0"])
+
+    def test_aider_finds_a_fresh_model_list_and_never_fetches_it(self):
+        """Aider fetches LiteLLM's model list from GitHub when its cache is missing, older than a day
+        or empty, and prints the failure in a VM that reaches only the inference. Its profile
+        writes a fresh, non-empty cache naming the server's models."""
+        import time
+        with tempfile.TemporaryDirectory() as folder:
+            root = Path(folder) / "home"
+            profiles.configure("aider", "source:model", [{"id": "source:model"}, {"id": "other"}], root)
+            cache = root / ".aider/caches/model_prices_and_context_window.json"
+            content = json.loads(cache.read_text(encoding="utf-8"))
+            self.assertEqual(set(content), {"openai/source:model", "openai/other"})
+            self.assertEqual(content["openai/source:model"]["max_input_tokens"], 32768)
+            self.assertLess(time.time() - cache.stat().st_mtime, 60 * 60 * 24)
+
+    def test_interactive_starts_codex_goose_and_deepseek_cleanly(self):
+        """Typed into like a person on 11 Nov 2026: Codex exited before its screen (its background
+        server needs `ps`, absent from the image), Goose asked about usage data before the session,
+        and DeepSeek ended in a stack trace about a missing "tui" profile."""
+        import io
+        import runtime
+        with tempfile.TemporaryDirectory() as folder:
+            root = Path(folder)
+            argv, _ = profiles.configure("codex", "source:model", [{"id": "source:model"}], root / "codex")
+            # A top-level option: before `exec` too, which the one-shot runs add after it.
+            self.assertEqual(argv, ["codex", "--model", "source:model", "--no-daemon"])
+            _, env = profiles.configure("goose", "source:model", [{"id": "source:model"}], root / "goose")
+            self.assertEqual(env["GOOSE_TELEMETRY_OFF"], "1")
+            config = json.loads((root / "goose/.config/goose/config.yaml").read_text(encoding="utf-8"))
+            self.assertIs(config["GOOSE_TELEMETRY_ENABLED"], False)
+            # Gemini asked whether to trust the workspace at every start and restarted after the answer.
+            profiles.configure("gemini", "source:model", [{"id": "source:model"}], root / "gemini")
+            settings = json.loads((root / "gemini/.gemini/settings.json").read_text(encoding="utf-8"))
+            self.assertIs(settings["security"]["folderTrust"]["enabled"], False)
+        catalog = lambda *_args, **_kwargs: io.BytesIO(json.dumps({"data": [{"id": "source:model"}]}).encode())
+        with patch.object(runtime.urllib.request, "urlopen", side_effect=catalog), patch.object(runtime.os, "isatty", return_value=False), \
+             patch.dict(runtime.os.environ, {"SOLVER_MODEL": "source:model"}), patch.object(runtime.blue, "run", return_value=0) as started, \
+             patch.object(runtime, "configure", side_effect=lambda h, m, c, r: profiles.configure(h, m, c, Path(tempfile.mkdtemp()))):
+            with patch.object(runtime.sys, "argv", ["runtime.py", "run", "deepseek"]), self.assertRaisesRegex(ValueError, "one task at a time"):
+                runtime.run("deepseek")
+            started.assert_not_called()
+            with patch.object(runtime.sys, "argv", ["runtime.py", "run", "deepseek", "--print", "hello"]):
+                runtime.run("deepseek")
+            self.assertEqual(started.call_args[0][0][:2], ["dsh", "headless"])
 
     def test_download_pins_server_and_never_includes_local_state(self):
         self.assertEqual(harness_download.bundle("pi", "https://solver.example"), harness_download.bundle("pi", "https://solver.example"))

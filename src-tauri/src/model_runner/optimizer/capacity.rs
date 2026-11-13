@@ -95,8 +95,13 @@ const TRANSFORMERS_RUNNER: &str = "yougori-transformers-chat";
 const LLAMA_CPP: &str = "local-single-llama-cpp-v1";
 /// The preflight runner the llama.cpp profile is offered to.
 const LLAMA_CPP_RUNNER: &str = "yougori-llama-cpp";
-/// The context the llama.cpp launch allocates its KV cache for (`-c 32768`, engine_backends.py).
+/// The context the llama.cpp launch allocates its KV cache for unless the owner chose another
+/// window (`-c 32768`, engine_backends.py; `model optimize --context`, [`super::MODEL_CONTEXT`]).
 const LLAMA_CPP_CONTEXT: u64 = 32_768;
+/// The GGUF header facts a llama.cpp demand was priced from (`resources.gguf`: every tensor's
+/// bytes and the KV cache bytes per token), stamped beside it so the demand follows the context
+/// window each start allocates ([`reprice_llama_cpp`]).
+pub(super) const GGUF: &str = "YOUGORI_GPU_CAPACITY_GGUF";
 /// What llama.cpp holds on the GPU beside its weights and KV cache: compute buffers and the
 /// CUDA context with its libraries. Measured with b11425 on the RTX 5090 host for
 /// Qwen2.5-0.5B-Instruct Q4_K_M: 67.5 MiB of compute buffer by its own report and about
@@ -119,6 +124,25 @@ pub(super) fn vllm_floor(total: u64) -> u64 {
         .min(total.saturating_sub(RESERVE))
         .max(pool)
 }
+/// A vLLM runner that parked by sleep when it was unloaded: its engine process stays alive and
+/// keeps part of the GPU (its CUDA context, graphs), which the engine's host probe read before and
+/// after the park. When that model asks for the GPU again, what it still holds is its own, not
+/// outside use: without this credit its own leftover was charged against its own floor, the
+/// reservation was refused on every pass and the model never woke (only a restart helped).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(super) struct Parked {
+    pub(super) before: u64,
+    pub(super) after: u64,
+}
+
+impl Parked {
+    /// What the parked runner still holds of a grant of `reserved` bytes: what it held before the
+    /// park less what the park returned, never more than the GPU showed in use after it.
+    pub(super) fn retained(self, reserved: u64) -> u64 {
+        reserved.saturating_sub(self.before.saturating_sub(self.after)).min(self.after)
+    }
+}
+
 const MAX_AGE: Duration = Duration::from_secs(5);
 /// The Transformers runner's prefill with eager attention (model_server.py,
 /// `attn_implementation="eager"`) materializes the attention scores of the whole prompt one
@@ -459,22 +483,24 @@ pub(super) fn stamp_transformers(
 
 /// The demand of a GGUF checkpoint under the llama.cpp profile, from what the preflight read
 /// of its header (`resources.gguf`, `preflight::gguf_facts`): every tensor's bytes, the KV
-/// cache of [`LLAMA_CPP_CONTEXT`] tokens and [`LLAMA_CPP_FIXED`]. `None` without those facts.
-fn llama_cpp_demand(gguf: &Value) -> Option<u64> {
+/// cache of `context` tokens and [`LLAMA_CPP_FIXED`]. `None` without those facts.
+fn llama_cpp_demand(gguf: &Value, context: u64) -> Option<u64> {
     let tensors = gguf["tensorBytes"].as_u64().filter(|n| *n > 0 && *n <= 1 << 46)?;
     let per_token = gguf["kvBytesPerToken"].as_u64().filter(|n| *n > 0 && *n <= 1 << 24)?;
     tensors
-        .checked_add(per_token.checked_mul(LLAMA_CPP_CONTEXT)?)?
+        .checked_add(per_token.checked_mul(context)?)?
         .checked_add(LLAMA_CPP_FIXED)
 }
 
-/// Stamps a new llama.cpp workload with its demand when it fits this host's one GPU beside the
-/// host's headroom; otherwise (or without header facts) it keeps the legacy scheduler.
+/// Stamps a new llama.cpp workload with its demand, and the header facts it was priced from
+/// ([`GGUF`]), when it fits this host's one GPU beside the host's headroom; otherwise (or
+/// without header facts) it keeps the legacy scheduler.
 pub(super) fn stamp_llama_cpp(environment: &mut Value, compatibility: &Value, gpu: &Snapshot) -> bool {
-    let Some(bytes) = llama_cpp_demand(&compatibility["resources"]["gguf"]) else {
+    let gguf = &compatibility["resources"]["gguf"];
+    let Some(bytes) = llama_cpp_demand(gguf, LLAMA_CPP_CONTEXT) else {
         return false;
     };
-    if bytes > gpu.total.saturating_sub(HOST_HEADROOM) {
+    if llama_cpp_fits(bytes, gpu.total).is_err() {
         return false;
     }
     Demand {
@@ -482,7 +508,48 @@ pub(super) fn stamp_llama_cpp(environment: &mut Value, compatibility: &Value, gp
         bytes,
     }
     .write(environment);
+    environment[GGUF] = json!({"tensorBytes": gguf["tensorBytes"], "kvBytesPerToken": gguf["kvBytesPerToken"]}).to_string().into();
     true
+}
+
+/// Refuses a llama.cpp demand larger than a GPU of `total` bytes leaves beside the host's
+/// headroom: admission could never grant it.
+pub(super) fn llama_cpp_fits(bytes: u64, total: u64) -> Result<(), String> {
+    if bytes <= total.saturating_sub(HOST_HEADROOM) {
+        return Ok(());
+    }
+    let gb = |bytes: u64| bytes as f64 / 1_073_741_824.0;
+    Err(format!("At that context window this model reserves {:.1} GB of GPU memory, more than this {:.1} GB GPU leaves beside the host. Choose a shorter context window.", gb(bytes), gb(total)))
+}
+
+/// The llama.cpp demand of a workload stamped with that profile, priced at a context window of
+/// `context` tokens from the header facts stamped beside it ([`GGUF`]). `None` when there is
+/// nothing to price: no llama.cpp profile, or a stamp without the facts held to the 32,768
+/// tokens it was priced at. Such a stamp takes no other window.
+pub(super) fn llama_cpp_demand_at(options: &BTreeMap<String, String>, context: u64) -> Result<Option<u64>, String> {
+    if options.get(POLICY).map(String::as_str) != Some(LLAMA_CPP) {
+        return Ok(None);
+    }
+    let facts = options.get(GGUF).and_then(|facts| serde_json::from_str::<Value>(facts).ok());
+    match facts.and_then(|facts| llama_cpp_demand(&facts, context)) {
+        Some(bytes) => Ok(Some(bytes)),
+        None if context == LLAMA_CPP_CONTEXT => Ok(None),
+        None => Err("This model's GPU reservation was priced for 32,768 tokens when it was created and cannot follow another context window. Recreate the model to choose one.".into()),
+    }
+}
+
+/// Prices a llama.cpp workload's demand again at the context window its next start allocates
+/// ([`super::MODEL_CONTEXT`], else [`LLAMA_CPP_CONTEXT`]); a workload without the profile or the
+/// facts keeps its demand. As a stopped model `starting` it is priced exactly; when the window is
+/// saved it only grows, since the runner may hold the larger window until it restarts.
+pub(super) fn reprice_llama_cpp(options: &mut BTreeMap<String, String>, starting: bool) {
+    let context = options.get(super::MODEL_CONTEXT).and_then(|tokens| tokens.parse().ok()).unwrap_or(LLAMA_CPP_CONTEXT);
+    if let Ok(Some(bytes)) = llama_cpp_demand_at(options, context) {
+        let held = options.get(DEMAND).and_then(|held| held.parse::<u64>().ok()).unwrap_or(0);
+        if starting || bytes > held {
+            options.insert(DEMAND.into(), bytes.to_string());
+        }
+    }
 }
 
 /// [`stamp_transformers`] or [`stamp_llama_cpp`] on this host's one GPU, observed with the
@@ -491,7 +558,7 @@ pub(super) fn stamp_llama_cpp(environment: &mut Value, compatibility: &Value, gp
 pub(super) async fn local_stamp(environment: &mut Value, compatibility: &Value) -> bool {
     let llama_cpp = compatibility["runner"] == LLAMA_CPP_RUNNER;
     if compatibility["runner"] != TRANSFORMERS_RUNNER && !llama_cpp
-        || llama_cpp && llama_cpp_demand(&compatibility["resources"]["gguf"]).is_none()
+        || llama_cpp && llama_cpp_demand(&compatibility["resources"]["gguf"], LLAMA_CPP_CONTEXT).is_none()
     {
         return false;
     }
@@ -986,7 +1053,7 @@ impl<C: Clock> Accounting<C> {
         id: &str,
         bytes: Option<u64>,
     ) -> Result<(), String> {
-        self.settle_and_admit(snapshot, id, bytes.map(Demand::vllm))
+        self.settle_and_admit(snapshot, id, bytes.map(Demand::vllm), None)
     }
 
     /// Only after old grant fences have been invalidated. Transfer the entire
@@ -998,6 +1065,7 @@ impl<C: Clock> Accounting<C> {
         snapshot: &Snapshot,
         id: &str,
         demand: Option<Demand>,
+        parked: Option<Parked>,
     ) -> Result<(), String> {
         if self.device.is_some_and(|device| snapshot.device != device)
             || snapshot.observed.elapsed() > MAX_AGE
@@ -1025,13 +1093,15 @@ impl<C: Clock> Accounting<C> {
             );
         }
         let first = ledger.capacity(resource).is_none();
+        // A runner parked by sleep that asks again holds part of its own grant already ([`Parked`]).
+        let own = demand.zip(parked).map_or(0, |(demand, parked)| parked.retained(demand.reserved(snapshot.total)));
         ledger
             .declare_capacity(
                 resource,
                 CapacityDeclaration {
                     total: snapshot.total,
                     supervisor_reserve: RESERVE.min(snapshot.total),
-                    unmanaged_in_use: snapshot.used,
+                    unmanaged_in_use: snapshot.used.saturating_sub(own),
                     source: SourceClass::HostProbe,
                 },
             )
@@ -2008,6 +2078,7 @@ pub(super) async fn local_switch<F, Fut, S>(
     markers: &BTreeMap<String, String>,
     gone: &[RunnerGone],
     demand: Option<Demand>,
+    parked: Option<Parked>,
     shutdown: &CancellationToken,
     send: &F,
     persist: S,
@@ -2033,7 +2104,7 @@ where
             settle_on_host(
                 &HOST,
                 || engine_accounting(snapshot),
-                |host| host.settle_and_admit(snapshot, target, demand),
+                |host| host.settle_and_admit(snapshot, target, demand, parked),
             )
         },
     )
@@ -2174,6 +2245,13 @@ where
             .to_owned()
     })?;
     Ok(terms)
+}
+
+/// Whether an admission refused with `reason` was refused for want of GPU memory (also when the
+/// grants of runners seen gone were kept for it, [`gone::kept`]), not for an uncertain or refused
+/// control.
+pub(super) fn refused_for_room(reason: &str) -> bool {
+    reason.contains(NOT_AVAILABLE)
 }
 
 /// The words a person can act on for a co-admission that did not grant (U02 "actionable

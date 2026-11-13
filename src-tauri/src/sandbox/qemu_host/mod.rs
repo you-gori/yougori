@@ -24,6 +24,9 @@
 //!   others, as QEMU runs as an account of its own.
 //! - [`early_exit`]: QEMU's own report when it ends before QMP answers, read the same way
 //!   on every host: a hardware hypervisor error refuses the launch, never into emulation.
+//! - [`network_filter`]: the host's judge of every frame of a VM's network card, started by
+//!   each host beside a QEMU with a card: the public internet only, or the launch's targets
+//!   alone with the VM's DNS answered by the filter itself; never this computer.
 //!
 //! - [`windows_host`]: [`WindowsQemuHost`], the `QemuHost` port itself on Windows: the
 //!   private directory and bootstrap file ([`private_dir`]), the restricted low-integrity
@@ -50,6 +53,7 @@ pub mod host_map;
 pub mod layout;
 #[cfg(target_os = "linux")]
 pub mod linux_host;
+pub mod network_filter;
 #[cfg(windows)]
 pub mod private_dir;
 pub mod qmp;

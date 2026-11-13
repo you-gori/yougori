@@ -1,11 +1,16 @@
 """Tunnels to the sites a harness session may reach.
 
-A harness VM has no network card unless its owner allowed the whole internet. When the owner chose
-sites instead, the harness reaches them through an HTTPS proxy inside the VM (HTTPS_PROXY): each
-CONNECT becomes a tunnel over the same owner-only channel that carries the model relay, and the
-launcher on the host opens it only to a chosen site, on port 443, at a public address. The host's
-check is the one that counts; the VM's answers 403 early. TLS runs end to end between the tool and
-the site; neither half reads it.
+A harness VM has no network card unless its owner allowed the internet or chose targets (which go
+straight out on the card Yougori holds to them). When the owner chose sites, the harness reaches
+them through an HTTPS proxy inside the VM (HTTPS_PROXY): each CONNECT becomes a tunnel over the
+same owner-only channel that carries the model relay, and the launcher on the host opens it only
+to a chosen site, on port 443, at a public address. The host's check is the one that counts; the
+VM's answers 403 early. TLS runs end to end between the tool and the site; neither half reads it.
+
+With targets beside the sites, a target goes past the proxy (NO_PROXY) unless it shares a name
+with a chosen site: NO_PROXY covers a name's subdomains and never a port, so such a target stays
+on the proxy, which opens it straight out on the card (a CONNECT, or a plain request) on the
+target's own ports, while the site's names keep going through the launcher.
 """
 import base64
 import collections
@@ -17,6 +22,7 @@ import re
 import secrets
 import socket
 import threading
+from urllib.parse import urlsplit
 
 PROXY_PORT = 3128
 CHUNK = 256 * 1024  # raw bytes in one tunnel message, either way
@@ -49,6 +55,50 @@ def allowed(chosen, host):
     return any(host == site or host.endswith("." + site) for site in chosen)
 
 
+def shares_name(chosen, host):
+    """Whether `host` is a chosen site, lies under one or has one under it: NO_PROXY, which covers
+    a name's subdomains, cannot take such a host off the proxy without taking a site off it too."""
+    host = host.lower().rstrip(".") if isinstance(host, str) else ""
+    return any(host == site or host.endswith("." + site) or site.endswith("." + host) for site in chosen)
+
+
+def target_ports(values):
+    """The chosen targets (`host:port`, or a host alone for every port of it, as the launcher
+    checked them) by host: the set of its ports, or None for every port."""
+    chosen = {}
+    for value in values:
+        host, separator, port = value.rpartition(":")
+        host, port = (host, int(port)) if separator else (value, None)
+        host = host.lower().rstrip(".")
+        if port is None:
+            chosen[host] = None
+        elif chosen.get(host, ()) is not None:
+            chosen.setdefault(host, set()).add(port)
+    return chosen
+
+
+def targeted(chosen, host, port):
+    """Whether `host` on `port` is a chosen target: the host as it was named (never a subdomain of
+    it), on a port named for it, or on any port when it was named alone."""
+    host = host.lower().rstrip(".") if isinstance(host, str) else ""
+    return host in chosen and (chosen[host] is None or port in chosen[host])
+
+
+def pipe(source, destination):
+    """Moves `source`'s bytes to `destination` until `source` ends, then ends `destination`'s
+    sending half as well; a failure either way ends both connections."""
+    try:
+        while block := source.recv(CHUNK):
+            destination.sendall(block)
+        destination.shutdown(socket.SHUT_WR)
+    except OSError:
+        for connection in (source, destination):
+            try:
+                connection.shutdown(socket.SHUT_RDWR)
+            except OSError:
+                pass
+
+
 class Tunnel:
     def __init__(self, client):
         self.id = secrets.token_hex(16)
@@ -59,10 +109,12 @@ class Tunnel:
 
 class GuestTunnels:
     """The VM's half: the proxy's tunnels and the messages waiting for the host's next poll. `lock`
-    is the session's condition, so a waiting poll wakes for tunnel traffic too."""
+    is the session's condition, so a waiting poll wakes for tunnel traffic too. `targets` (from
+    target_ports) are the chosen targets the proxy opens straight out on the VM's card."""
 
-    def __init__(self, chosen, lock):
+    def __init__(self, chosen, lock, targets=None):
         self.sites = chosen
+        self.targets = targets or {}
         self.lock = lock
         self.tunnels = {}
         self.events = collections.deque()
@@ -143,8 +195,9 @@ class GuestTunnels:
 
 
 class Proxy(http.server.BaseHTTPRequestHandler):
-    """The VM's HTTPS proxy: CONNECT to a chosen site on port 443, nothing else."""
-    rbufsize = 0  # nothing the client sends after CONNECT may sit in a buffer
+    """The VM's HTTPS proxy: CONNECT to a chosen site on port 443, through the launcher; CONNECT or
+    a plain request to a chosen target on its ports, straight out on the VM's card; nothing else."""
+    rbufsize = 0  # nothing the client sends after its request's head may sit in a buffer
     server_version = "YougoriSites"
     sys_version = ""
 
@@ -160,14 +213,21 @@ class Proxy(http.server.BaseHTTPRequestHandler):
     def do_CONNECT(self):
         tunnels = self.server.tunnels
         host, _, port = self.path.rpartition(":")
+        if re.fullmatch("[0-9]{1,5}", port) and 0 < int(port) < 65536 and targeted(tunnels.targets, host, int(port)):
+            return self.direct(host, int(port))
         if port != "443" or not allowed(tunnels.sites, host):
-            return self.refuse(403, "Only the sites chosen for this session are reachable")
+            return self.refuse(403, "Only the sites and targets chosen for this session are reachable")
         tunnel = tunnels.open(host.lower().rstrip("."), 443, self.connection)
         if tunnel is None:
             return self.refuse(503, "Too many open connections")
         if not tunnel.answered.wait(45) or tunnel.error or tunnel.id not in tunnels.tunnels:
+            # The client hears why before its connection closes.
+            try:
+                self.refuse(502, tunnel.error or "The site did not answer")
+            except OSError:
+                pass
             tunnels.close(tunnel.id, tell=True)
-            return self.refuse(502, tunnel.error or "The site did not answer")
+            return
         self.send_response(200, "Connection established")
         self.end_headers()
         try:
@@ -178,7 +238,55 @@ class Proxy(http.server.BaseHTTPRequestHandler):
             pass
         tunnels.close(tunnel.id, tell=True)
 
+    def direct(self, host, port, head=None):
+        """Opens `host`:`port` straight out on the VM's network card, which Yougori holds to the
+        chosen targets, then moves bytes both ways until both sides end: after the 200 that
+        opens a CONNECT tunnel, or after `head`, a plain request as the target takes it."""
+        try:
+            upstream = socket.create_connection((host, port), timeout=20)
+        except OSError as error:
+            return self.refuse(502, host + " could not be reached: " + (str(error) or type(error).__name__))
+        self.close_connection = True
+        with upstream:
+            upstream.settimeout(None)
+            try:
+                if head is None:
+                    self.send_response(200, "Connection established")
+                    self.end_headers()
+                else:
+                    upstream.sendall(head)
+            except OSError:
+                return
+            back = threading.Thread(target=pipe, args=(upstream, self.connection), daemon=True)
+            back.start()
+            pipe(self.connection, upstream)
+            back.join()
+
+    def origin_request(self, address, given_port):
+        """A plain request as the target itself takes it: the path alone, never the whole address,
+        with the address's host as its Host (a proxy replaces the client's, RFC 9112), and none of
+        the proxy's own fields; one exchange, then the connection closes (or becomes what the
+        client upgrades it to)."""
+        path = (address.path or "/") + ("?" + address.query if address.query else "")
+        options = {option.strip().lower() for option in self.headers.get("Connection", "").split(",")}
+        upgrade = "upgrade" in options and "Upgrade" in self.headers
+        authority = address.hostname + (":" + str(given_port) if given_port else "")
+        lines = [" ".join((self.command, path, self.request_version)), "Host: " + authority]
+        lines += [name + ": " + value for name, value in self.headers.items()
+                  if name.lower() not in ("host", "connection", "keep-alive", "proxy-connection", "proxy-authorization")]
+        lines.append("Connection: " + ("Upgrade" if upgrade else "close"))
+        return ("\r\n".join(lines) + "\r\n\r\n").encode("latin-1", "replace")
+
     def plain(self):
+        address = urlsplit(self.path)
+        try:
+            given_port = address.port
+        except ValueError:
+            given_port = 0
+        port = 80 if given_port is None else given_port
+        if (address.scheme == "http" and address.hostname and 0 < port < 65536
+                and targeted(self.server.tunnels.targets, address.hostname, port)):
+            return self.direct(address.hostname, port, self.origin_request(address, given_port))
         self.refuse(405, "Use HTTPS: this proxy only opens tunnels to the chosen sites")
 
     do_GET = do_POST = do_PUT = do_PATCH = do_DELETE = do_HEAD = do_OPTIONS = plain

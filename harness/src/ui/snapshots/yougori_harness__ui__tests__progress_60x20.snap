@@ -1,0 +1,25 @@
+---
+source: src/ui/tests.rs
+expression: narrow
+---
+
+  ▀▄ ▄▀ ▄▀▀▄ █  █ ▄▀▀▀ ▄▀▀▄ █▀▀▄ ▀█▀
+    █   █  █ █  █ █ ▀█ █  █ █▀█   █
+    ▀    ▀▀   ▀▀   ▀▀▀  ▀▀  ▀  ▀ ▀▀▀
+  Strix  v1.0.0
+  unsloth/gemma-4-26B-A4B-it-GGUF
+
+  Strix is ready
+  Target  https://shop.example.test
+  Depth   Test safely
+
+› Scan
+
+  ⠙ Port scan  ━━━━╸───────  412 / 1,000 steps          5.5s
+  ⠙ Crawling the site  48 pages                         5.5s
+  ◇ Downloading the wordlist  5.0 MB / 5.0 MB      done 2.0s
+╭──────────────────────────────────────────────────────────╮
+│ › Tell Strix what to test                                │
+╰──────────────────────────────────────────────────────────╯
+ ⠙ 5.5s · esc to stop · Strix · gemma-4-26B-A4B-it-GGUF
+[cursor 4,17]

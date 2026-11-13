@@ -1,4 +1,10 @@
 {
+  "yougori": {
+    "kind": "yougori",
+    "version": "1.2.5",
+    "bases": {"postgres": ["plandex", "pentagi"], "chromium": ["shannon"]},
+    "memory": {"shannon": 6}
+  },
   "opencode": {
     "kind": "npm",
     "package": "opencode-ai",

@@ -1091,6 +1091,17 @@ impl<P: VmPorts> Core<P> {
         spec: &LaunchSpec,
     ) -> Result<(), VmServiceError> {
         self.open()?;
+        // Targets narrow a network card; a GPU VM's card is the Windows NAT's, which the
+        // host's network filter does not see, so it is never given targets it would not hold.
+        if spec.targets.is_some() && (!spec.internet || spec.gpu) {
+            return Err(VmServiceError::Connection {
+                detail: if spec.gpu {
+                    "chosen targets are not available for GPU VMs".into()
+                } else {
+                    "chosen targets need the VM's network card".into()
+                },
+            });
+        }
         super::publish::check_published(&spec.published)
             .map_err(|detail| VmServiceError::Ingress { detail })?;
         let network = super::publish::launch_grants(&spec.published)
@@ -1152,6 +1163,7 @@ impl<P: VmPorts> Core<P> {
             plant_gpu_request(&mut profile);
             profile.required.declared_endpoints = endpoints;
             profile.required.workload_image = spec.workload_image.clone();
+            profile.required.targets = spec.targets.clone();
             // A launch that publishes a service may carry its callers' streams, and one with
             // connection endpoints its programs' streams to granted services of other
             // sandboxes (named, unparsed transport); the VM itself stays without a network

@@ -1,0 +1,25 @@
+---
+source: src/ui/tests.rs
+expression: narrow
+---
+
+  ▀▄ ▄▀ ▄▀▀▄ █  █ ▄▀▀▀ ▄▀▀▄ █▀▀▄ ▀█▀
+    █   █  █ █  █ █ ▀█ █  █ █▀█   █
+    ▀    ▀▀   ▀▀   ▀▀▀  ▀▀  ▀  ▀ ▀▀▀
+  Strix  v1.0.0
+  unsloth/gemma-4-26B-A4B-it-GGUF
+
+  Strix 0.4 · 3 agents
+  Target  https://shop.example.test
+  Depth   Test safely
+
+
+
+
+
+╭──────────────────────────────────────────────────────────╮
+│ › Tell Strix what to test                                │
+╰──────────────────────────────────────────────────────────╯
+ enter send   ctrl+p commands   ctrl+c quit
+ Strix · unsloth/gemma-4-26B-A4B-it-GGUF
+[cursor 4,16]

@@ -4,11 +4,12 @@
 
 use std::collections::BTreeSet;
 use std::fs;
-use std::io::{Seek, SeekFrom, Write};
+use std::io::{BufRead, BufReader, Seek, SeekFrom, Write};
 use std::num::NonZeroU64;
 use std::path::{Path, PathBuf};
-use std::sync::Arc;
-use std::time::Duration;
+use std::process::{Child, Command, Stdio};
+use std::sync::{mpsc, Arc};
+use std::time::{Duration, Instant};
 
 use tempfile::TempDir;
 
@@ -4157,8 +4158,11 @@ fn a_newer_layout_is_refused_whole_and_left_alone() {
         .unwrap_err();
         assert!(
             matches!(
-                refused.operation,
-                StorageOperation::Format | StorageOperation::Parse
+                &refused,
+                OpenFailure::Storage(StorageFailure {
+                    operation: StorageOperation::Format | StorageOperation::Parse,
+                    ..
+                })
             ),
             "{refused:?}"
         );
@@ -4378,4 +4382,195 @@ fn a_leased_path_names_the_committed_data_and_is_refused_like_a_read() {
         catalog.leased_path(&a, &reader, lease),
         Err(ReadRefusal::Storage { .. })
     ));
+}
+
+// ---- One owner per root -------------------------------------------------------------------
+
+/// What a holder's atomic writes in progress leave under the root: a temporary beside the
+/// records and one in the root itself, the two places an open removes them from.
+fn writes_in_progress(fixture: &Fixture) -> [PathBuf; 2] {
+    let paths = [
+        fixture.root().join("records").join("in-progress.tmp"),
+        fixture.root().join("format.tmp"),
+    ];
+    for path in &paths {
+        fs::write(path, b"being written").unwrap();
+    }
+    paths
+}
+
+#[test]
+fn a_second_open_of_a_held_root_is_refused_and_removes_nothing() {
+    let fixture = Fixture::new();
+    let mut catalog = fixture.open();
+    let a = tenant("a");
+    let bytes = data(98, 20);
+    let object = import_bytes(&mut catalog, weights(&a, &bytes), &bytes);
+    let _interrupted = interrupt(&mut catalog, "held", &data(99, 24), 1);
+    let in_progress = writes_in_progress(&fixture);
+    let before = file_digests(fixture.root(), "");
+    // The lock file is there, and others can read it while it is held.
+    assert_eq!(
+        before.get(LOCK_FILE),
+        Some(&digest("yougori/test/file/v1", &[b""]))
+    );
+
+    let started = Instant::now();
+    let refused = Catalog::open(
+        fixture.root(),
+        base_config(),
+        verifiers(),
+        fixture.clock.clone(),
+    )
+    .unwrap_err();
+    assert_eq!(
+        refused,
+        OpenFailure::InUse {
+            root: fixture.root().to_path_buf()
+        }
+    );
+    // It waited for a holder that might be ending, then gave up.
+    assert!(started.elapsed() >= super::lock::RELEASE_GRACE);
+    let message = refused.to_string();
+    assert!(
+        message.contains(&fixture.root().display().to_string()) && message.contains(LOCK_FILE),
+        "{message}"
+    );
+    // Nothing under the root was created, changed or removed, and the holder carries on.
+    assert_eq!(file_digests(fixture.root(), ""), before);
+    assert_eq!(catalog.status(&a, object), ObjectStatus::Published);
+
+    // The lock goes with the catalog that held it. The root opens again, and only now are
+    // the temporaries of the writes that never finished removed; the interrupted import's
+    // staging is still there to resume from.
+    drop(catalog);
+    let (catalog, report) = fixture.open_with(base_config(), verifiers());
+    assert_eq!(report.temporaries_removed, in_progress.len());
+    assert!(in_progress.iter().all(|path| !path.exists()));
+    assert_eq!(report.staging, 1);
+    assert_eq!(catalog.status(&a, object), ObjectStatus::Published);
+    assert!(matches!(
+        Catalog::open(
+            fixture.root(),
+            base_config(),
+            verifiers(),
+            fixture.clock.clone()
+        ),
+        Err(OpenFailure::InUse { .. })
+    ));
+}
+
+/// The root a child process of this test executable holds, and the start of each line it
+/// prints ([`catalog_holder_child_process`]).
+const HOLDER_ROOT: &str = "YOUGORI_TEST_CATALOG_HOLDER_ROOT";
+const HOLDER_PREFIX: &str = "catalog-holder-child:";
+
+/// This test executable again, running only [`catalog_holder_child_process`] on a root:
+/// another process holding it. Killed when dropped, so a failing test leaves no process.
+struct HoldingProcess(Child);
+
+impl HoldingProcess {
+    /// Starts the child on `root` and waits until it holds the root.
+    fn start(root: &Path) -> Self {
+        let child_test = module_path!()
+            .split_once("::")
+            .map(|(_, path)| format!("{path}::catalog_holder_child_process"))
+            .unwrap();
+        let mut child = Command::new(std::env::current_exe().unwrap())
+            .args([
+                child_test.as_str(),
+                "--exact",
+                "--nocapture",
+                "--test-threads=1",
+            ])
+            .env(HOLDER_ROOT, root)
+            .stdin(Stdio::null())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::null())
+            .spawn()
+            .unwrap();
+        let stdout = child.stdout.take().unwrap();
+        let holder = Self(child);
+        let (send, lines) = mpsc::channel();
+        // The child's lines, wherever the test harness's own output put them on a line.
+        std::thread::spawn(move || {
+            for line in BufReader::new(stdout).lines().map_while(Result::ok) {
+                if let Some(at) = line.find(HOLDER_PREFIX) {
+                    let _ = send.send(line[at..].to_owned());
+                }
+            }
+        });
+        let line = lines
+            .recv_timeout(Duration::from_secs(120))
+            .expect("the child process reports that it holds the root");
+        assert_eq!(line, format!("{HOLDER_PREFIX} holding"));
+        holder
+    }
+
+    /// Ends the child at once, without letting it close anything, as a crash would, and
+    /// waits until it is gone.
+    fn kill(&mut self) {
+        self.0.kill().unwrap();
+        self.0.wait().unwrap();
+    }
+}
+
+impl Drop for HoldingProcess {
+    fn drop(&mut self) {
+        let _ = self.0.kill();
+        let _ = self.0.wait();
+    }
+}
+
+/// The child half of [`a_root_another_process_holds_is_refused_and_opens_once_it_dies`]: a
+/// no-op unless that test started this executable to run it.
+#[test]
+fn catalog_holder_child_process() {
+    let Some(root) = std::env::var_os(HOLDER_ROOT) else {
+        return;
+    };
+    let clock = Arc::new(ManualClock::new(MonotonicTime::from_nanos(1)));
+    let (_catalog, _) = Catalog::open(Path::new(&root), base_config(), verifiers(), clock).unwrap();
+    println!("{HOLDER_PREFIX} holding");
+    // The parent kills this process; the bound only keeps an orphan from waiting for ever.
+    std::thread::sleep(Duration::from_secs(120));
+}
+
+#[test]
+fn a_root_another_process_holds_is_refused_and_opens_once_it_dies() {
+    let fixture = Fixture::new();
+    drop(fixture.open());
+    let mut holder = HoldingProcess::start(fixture.root());
+    let in_progress = writes_in_progress(&fixture);
+    let before = file_digests(fixture.root(), "");
+    assert!(matches!(
+        Catalog::open(
+            fixture.root(),
+            base_config(),
+            verifiers(),
+            fixture.clock.clone()
+        ),
+        Err(OpenFailure::InUse { .. })
+    ));
+    assert_eq!(file_digests(fixture.root(), ""), before);
+
+    // The holder dies without closing anything. The system releases its lock: the root
+    // opens again, with no stale lock to clear, and recovers what the holder left.
+    holder.kill();
+    let deadline = Instant::now() + Duration::from_secs(30);
+    let report = loop {
+        match Catalog::open(
+            fixture.root(),
+            base_config(),
+            verifiers(),
+            fixture.clock.clone(),
+        ) {
+            Ok((_, report)) => break report,
+            // The system may take a moment to release a lock after its process has gone.
+            Err(OpenFailure::InUse { .. }) if Instant::now() < deadline => {}
+            Err(other) => panic!("the root did not open after its holder died: {other}"),
+        }
+    };
+    assert_eq!(report.temporaries_removed, in_progress.len());
+    assert!(in_progress.iter().all(|path| !path.exists()));
 }

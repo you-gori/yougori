@@ -32,9 +32,110 @@ def executable():
     return None
 
 
+def trim(payload, context, cap):
+    """A chat request whose reply limit (max_tokens, max_completion_tokens) the model can take: at
+    most `cap` (None: no cap) and what `context` leaves after the conversation, estimated
+    generously (3 characters a token). Anything already within both is unchanged. A request that
+    names no limit: a rented GPU's vLLM (no cap) keeps none and gives a reply all its context
+    leaves; a Yougori model server is told the cap, or the room when less, since one released
+    up to 1.2.4 stops every reply at 256 tokens unless told. With no room left to estimate, none
+    is added, and the model server's own default takes what the context leaves."""
+    keys = [key for key in ("max_tokens", "max_completion_tokens") if type(payload.get(key)) is int]
+    room = None
+    if context:
+        estimate = context - (len(json.dumps(payload.get("messages", []))) + len(json.dumps(payload.get("tools", [])))) // 3 - 64
+        room = estimate if estimate >= 64 else None
+    if not keys:
+        if cap is None or (context and room is None):
+            return payload
+        return {**payload, "max_tokens": cap if room is None else min(cap, room)}
+    wanted = min(payload[key] for key in keys)
+    allowed = min(wanted, cap) if cap else wanted
+    if room is not None:
+        allowed = min(allowed, room)
+    return payload if allowed >= wanted else {**payload, **{key: max(1, allowed) for key in keys}}
+
+
+# A shared model's health is read with every inventory, at most this long. A model server busy
+# freeing GPU memory answers it late (its health waits for the unload), so a late answer keeps the
+# model's last state this long, and the catalog does not flicker.
+HEALTH_SECONDS = 3
+KEEP_SECONDS = 30
+# What a model loaded once, with its files checked, passes through while automatic GPU memory
+# unloads it and loads it again: a request wakes it, so it is listed as ready meanwhile.
+ON_DEMAND = ("idle", "queued", "freeing_memory", "loading", "unloading")
+# A start that fails right after a restart stopped a running model is tried again after this long.
+RESTART_RETRY_SECONDS = 5
+
+
+def download_progress(download):
+    """A download's progress as a model server's health gives it (receivedBytes, totalBytes,
+    bytesPerSecond), in whole numbers {"received", "total", "rate"}; None without a size."""
+    if not isinstance(download, dict):
+        return None
+    numbers = []
+    for key in ("receivedBytes", "totalBytes", "bytesPerSecond"):
+        value = download.get(key, 0)
+        if type(value) not in (int, float) or not math.isfinite(value) or value < 0:
+            return None
+        numbers.append(int(value))
+    received, total, rate = numbers
+    if not 0 < total <= 10 ** 13:
+        return None
+    return {"received": min(received, total), "total": total, "rate": min(rate, 10 ** 13)}
+
+
+def readiness(health):
+    """Whether a model can answer, from its model server's health: (state, progress). "ready" when
+    it says so, when it says nothing of its state (a server that is not Yougori's, such as a rented
+    GPU's raw vLLM), and while automatic GPU memory unloads and loads a model it loaded once;
+    "downloading" with how far it has got; "unavailable" when it could not load; "loading" for
+    every other step before it first loads (installing, waiting for the GPU, checking files)."""
+    status = health.get("status") if isinstance(health, dict) else None
+    if not isinstance(status, str) or status == "ready":
+        return "ready", None
+    if status == "error":
+        return "unavailable", None
+    optimizer = health.get("optimizer") if isinstance(health.get("optimizer"), dict) else {}
+    if health.get("weightsVerified") is True and optimizer.get("enabled") is True and status in ON_DEMAND:
+        return "ready", None
+    if status == "downloading":
+        return "downloading", download_progress(health.get("download"))
+    return "loading", None
+
+
+def size_words(count):
+    """Bytes as people read them: "8.0 GB", or "640 MB" under a gigabyte."""
+    return f"{count / 1e9:.1f} GB" if count >= 1e9 else f"{max(1, round(count / 1e6))} MB"
+
+
+def download_words(progress):
+    """How far a download has got, in plain ASCII: "42% of 8.0 GB, about 15 minutes left"."""
+    received, total, rate = progress["received"], progress["total"], progress["rate"]
+    words = f"{received * 100 // total}% of {size_words(total)}"
+    if rate > 0 and received < total:
+        seconds = (total - received) / rate
+        minutes = round(seconds / 60)
+        words += (", less than a minute left" if seconds < 60 else f", about {minutes} minute{'s' * (minutes != 1)} left" if minutes < 90
+                  else f", about {max(2, round(seconds / 3600))} hours left")
+    return words
+
+
+def not_ready(model, state, progress):
+    """Why a shared model cannot answer yet, for the caller, in plain ASCII (the website passes on
+    a refusal's printable ASCII only)."""
+    if state == "downloading":
+        return model + " is still downloading on this computer" + (": " + download_words(progress) if progress else "") + ". It answers once it has loaded."
+    if state == "loading":
+        return model + " is loading onto the GPU on this computer. It answers once it has loaded."
+    if state == "starting":
+        return model + " is starting on this computer. It answers once it has loaded."
+    return model + " could not load on this computer."
+
+
 class Adapter:
-    METHODS = {"get_platform_state", "refresh_host_metrics", "model_api_status", "model_api", "run_model", "start_model", "model_preflight",
-               "runpod_gpu_offers", "runpod_connect", "runpod_status", "runpod_create_pod", "run_neocloud_model", "runpod_action"}
+    METHODS = {"get_platform_state", "refresh_host_metrics", "model_api_status", "model_api", "run_model", "start_model", "stop_model", "model_preflight",
+               "model_agent_api", "runpod_gpu_offers", "runpod_connect", "runpod_status", "runpod_create_pod", "run_neocloud_model", "runpod_action"}
 
     def __init__(self, command, folder, controller=False):
         self.command, self.controller = command, controller
@@ -46,6 +147,10 @@ class Adapter:
         self.stopping = set()
         self.lock = threading.Lock()
         self.facts_read = {}  # environment -> ({"slots", "json"}, when read)
+        # What each shared model's health said last, as inventory reports it: environment ->
+        # (state, progress); and when its health last answered. A model without an entry is taken
+        # as ready: a rented GPU's agent relays through this adapter and never reads inventory.
+        self.readiness, self.health_read = {}, {}
 
     @staticmethod
     def loopback(api):
@@ -59,13 +164,14 @@ class Adapter:
     def facts(self, environment, api):
         """What the model server says of its launch, read from its own health route at most once
         a minute: "slots", how many requests it generates together (its requestQueue; the website
-        routes by it), and "json", whether it enforces a JSON reply format (response_format; the
-        website sends such requests only where it is enforced). None where unknown."""
+        routes by it), "json", whether it enforces a JSON reply format (response_format; the
+        website sends such requests only where it is enforced), "task" and "context", the tokens it
+        serves. None where unknown."""
         known = self.facts_read.get(environment)
         if known and known[1] > time.monotonic() - 60:
             return known[0]
         import http.client
-        url, value = self.loopback(api), {"slots": None, "json": None, "task": None}
+        url, value = self.loopback(api), {"slots": None, "json": None, "task": None, "context": None}
         if url:
             connection = http.client.HTTPConnection(url.hostname, url.port, timeout=3)
             try:
@@ -81,12 +187,66 @@ class Adapter:
                     # The kind of model: a media runner names its task (text-to-image, ...); the website routes jobs by it.
                     task = health.get("task") or ((health.get("capabilities") or {}).get("media") or {}).get("task")
                     value["task"] = task if isinstance(task, str) and re.fullmatch(r"[a-z][a-z-]{0,39}", task) else None
+                    # The context the model serves: a reply limit is trimmed to fit it (trim()).
+                    context = health.get("context")
+                    value["context"] = context if type(context) is int and 256 <= context <= 1048576 else None
             except (OSError, ValueError, http.client.HTTPException):
                 pass
             finally:
                 connection.close()
         self.facts_read[environment] = (value, time.monotonic())
         return value
+
+    def health(self, api):
+        """A model server's health, read now: its answer (a dict; empty for a server that says
+        nothing of its state, such as raw vLLM), "starting" while nothing answers there yet,
+        "unavailable" when the read is refused, or None when it did not answer in time."""
+        import http.client
+        url = self.loopback(api)
+        if not url:
+            return {}
+        connection = http.client.HTTPConnection(url.hostname, url.port, timeout=HEALTH_SECONDS)
+        try:
+            connection.request("GET", "/health", headers={"Authorization": "Bearer " + api.get("apiKey", "")})
+            response = connection.getresponse()
+            raw = response.read(1024 * 1024)
+            if response.status in (502, 503, 504):
+                return "starting"
+            if response.status != 200:
+                return "unavailable"
+            try:
+                value = json.loads(raw)
+            except ValueError:
+                return {}
+            return value if isinstance(value, dict) else {}
+        except (ConnectionRefusedError, ConnectionResetError, ConnectionAbortedError, http.client.BadStatusLine):
+            # Nothing listens there yet, or Yougori's port answers while the model server behind
+            # it has not started.
+            return "starting"
+        except (OSError, http.client.HTTPException):
+            return None
+        finally:
+            connection.close()
+
+    def check(self, environment, api):
+        """Whether a shared model can answer now, from its health read afresh: (state, progress),
+        kept for inventory and requests. A late answer keeps the last state for a while; a model
+        that turns ready has its launch facts read again (slots, JSON output, context)."""
+        answer = self.health(api)
+        now = time.monotonic()
+        with self.lock:
+            before = self.readiness.get(environment)
+            if answer is None and before and now - self.health_read.get(environment, 0) < KEEP_SECONDS:
+                return before
+            if answer is None:
+                state = ("starting", None)
+            else:
+                state = (answer, None) if isinstance(answer, str) else readiness(answer)
+                self.health_read[environment] = now
+            self.readiness[environment] = state
+            if state[0] == "ready" and (before or ("",))[0] != "ready":
+                self.facts_read.pop(environment, None)
+        return state
 
     def call(self, method, **params):
         if method not in self.METHODS:
@@ -140,12 +300,24 @@ class Adapter:
                     pass
             if api.get("apiUrl") and api.get("apiKey"):
                 apis[identity] = api
-            facts = self.facts(identity, api) if identity in apis and identity in self.shared else {"slots": None, "json": None, "task": None}
+            shared = identity in self.shared
+            if identity in apis:
+                # A shared model is listed by what its model server says: ready only while it can
+                # answer, otherwise how far it has got. Another model, by its API alone.
+                phase, progress = self.check(identity, api) if shared else ("ready", None)
+            else:
+                phase, progress = "starting" if shared and env.get("status") == "provisioning" else "unavailable", None
+                if shared:
+                    with self.lock:
+                        self.readiness[identity] = (phase, None)
+            facts = self.facts(identity, api) if identity in apis and shared else {"slots": None, "json": None, "task": None, "context": None}
             models.append({"id": identity, "name": api.get("model") or model or env.get("name", "Model"),
-                           "state": "ready" if identity in apis else "unavailable", "shared": identity in self.shared,
+                           "state": phase, **({"progress": progress} if progress else {}), "shared": shared,
                            "place": "neocloud" if env.get("kind") == "cloud" else "local",
                            **({"slots": facts["slots"]} if facts["slots"] else {}), **({"json": facts["json"]} if facts["json"] is not None else {}),
-                           **({"task": facts["task"]} if facts["task"] else {})})
+                           **({"task": facts["task"]} if facts["task"] else {}),
+                           # The context its server serves: the website lists the smallest of a model's for harnesses.
+                           **({"context": facts["context"]} if facts.get("context") else {})})
         with self.lock:
             self.apis = apis
         from control_panel import sample
@@ -163,8 +335,30 @@ class Adapter:
             with self.lock:
                 self.shared.add(environment)
             self.save()
-            if item and item.get("kind") != "cloud" and item.get("status") != "running":
-                self.call("start_model", environmentId=environment)
+            restarted = False
+            if item.get("kind") != "cloud":
+                try:
+                    # The limits coding agents need (longer conversations, more messages, larger
+                    # requests), from the model's next start: one running without them starts again.
+                    # The engine says restartRequired only while limits saved after the container was
+                    # configured have not reached it (also after a restart for them failed), never
+                    # for a model installed with them or one whose start marks another setting.
+                    given = self.call("model_agent_api", environmentId=environment)
+                    if isinstance(given, dict) and given.get("restartRequired") is True:
+                        self.call("stop_model", environmentId=environment)
+                        item, restarted = {**item, "status": "stopped"}, True
+                except ComputeError:
+                    pass  # An older Yougori, or a model that takes no such limits (a media model): shared as it is.
+            if item.get("kind") != "cloud" and item.get("status") != "running":
+                try:
+                    self.call("start_model", environmentId=environment)
+                except ComputeError:
+                    if not restarted:
+                        raise
+                    # It ran before this restart: tried once more, so a refusal while another
+                    # operation on it finishes does not leave it stopped.
+                    time.sleep(RESTART_RETRY_SECONDS)
+                    self.call("start_model", environmentId=environment)
             api = self.call("model_api_status", environmentId=environment)
             if not api.get("apiUrl"):
                 api = self.call("model_api", environmentId=environment, port=self.port())
@@ -176,6 +370,20 @@ class Adapter:
                 self.shared.discard(environment)
                 self.apis.pop(environment, None)
         self.save()
+
+    def agent_runtime(self, model):
+        """Whether a model runs on vLLM for coding agents: where the engine runs its architecture
+        there natively, calling tools in the model family's format with a long context. Otherwise
+        the engine's own choice."""
+        try:
+            found = self.call("model_preflight", model=model)
+        except ComputeError:
+            return False
+        return isinstance(found, dict) and found.get("supported") is True and (found.get("runner") == "yougori-vllm" or isinstance(found.get("vllmNative"), dict))
+
+    def environment_ids(self):
+        """The environments on this computer now, by ID."""
+        return {env.get("id") for env in self.call("get_platform_state").get("environments", [])}
 
     def offers(self, options=None):
         options = rental_options(options or {})
@@ -221,7 +429,23 @@ class Adapter:
             self.share(payload["environment"], False)
             return {"environment": payload["environment"]}
         if kind == "load":
-            result = self.call("run_model", model=payload["model"], port=self.port())
+            # With the limits coding agents need, on vLLM where it serves the model natively, as
+            # `yougori inference connect` installs a contributor's models.
+            request = {"model": payload["model"], "port": self.port(), "resources": {"agentApi": True}}
+            before = None
+            if self.agent_runtime(payload["model"]):
+                request["runner"] = "vllm"
+                before = self.environment_ids()
+            try:
+                result = self.call("run_model", **request)
+            except ComputeError:
+                # vLLM takes a model only when all of it fits the GPU, and refuses one that does not
+                # before it makes anything; the engine's own runner may still fit it (quantized).
+                # Asked once more without vLLM, and only when the refused request made nothing.
+                if before is None or self.environment_ids() - before:
+                    raise
+                del request["runner"]
+                result = self.call("run_model", **request)
             identity = result["id"]
             self.share(identity)
             return {"environment": identity}
@@ -303,8 +527,24 @@ class Adapter:
                 raise ComputeError("Only Yougori's authenticated loopback model API is used.")
             if method not in ("GET", "POST", "DELETE") or not self.RELAYED.fullmatch(path):
                 raise ComputeError("This route is not relayed.")
+            if chat:
+                with self.lock:
+                    said = self.readiness.get(task["environment"], ("ready", None))
+                if said[0] != "ready":
+                    said = self.check(task["environment"], api)  # It may have loaded since the last inventory.
+                if said[0] != "ready":
+                    # Refused at once, with how far it has got: its model server would hold the
+                    # request until it has loaded, past the website's time limit.
+                    failure = 503
+                    refusal = json.dumps({"error": {"code": "model_" + said[0], "message": not_ready(api.get("model") or "This model", *said)}}).encode()
+                    raise ComputeError("This model cannot answer yet.")
             connection = http.client.HTTPConnection(url.hostname, url.port, timeout=120 if chat else 600)
             payload = {**task["payload"], "model": api["model"]} if chat else task.get("payload")
+            if chat:
+                # A reply limit the model cannot take (coding agents ask for 32,000) is trimmed to
+                # what it can: the engine's model server takes 4,096, and what the context leaves.
+                known = self.facts_read.get(task["environment"], ({}, 0))[0]
+                payload = trim(payload, api.get("context") or known.get("context"), api.get("reply_limit", 4096))
             body = None if method == "GET" or not isinstance(payload, dict) else json.dumps(payload)
             headers = {"Authorization": "Bearer " + api["apiKey"]}
             if body is not None:
@@ -316,7 +556,9 @@ class Adapter:
                 # a media route's own answer (an unknown job, a job not done) keeps its words, which
                 # are the model server's own.
                 failure = response.status if response.status in (400, 429) or (not chat and response.status in (404, 409, 410, 503)) else 502
-                if not chat and failure != 502:
+                # The model server's own refusal (Yougori's never repeats the request) says what to
+                # change: a conversation too long for its context, for example.
+                if failure != 502 and (not chat or failure == 400):
                     refusal = response.read(65536)
                 raise ComputeError("Model refused the request.")
             kind = response.getheader("Content-Type", "application/json")

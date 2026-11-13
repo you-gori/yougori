@@ -39,7 +39,7 @@ class Run:
             "YOUGORI_ACCEPTANCE_DATA_DIR": str(self.data),
             "YOUGORI_ACCEPTANCE_RUNTIME_DIR": str(args.runtime.resolve()),
             "YOUGORI_NETWORK_URL": "http://127.0.0.1:9",
-            "YOUGORI_CATALOG_ROOT": str(self.root / "catalog"),
+            "YOUGORI_ACCEPTANCE_CATALOG_ROOT": str(self.root / "catalog"),
             "YOUGORI_CATALOG_QUOTA_BYTES": str(8 * 1024 ** 3),
             "YOUGORI_LEDGER_HISTORY_DIR": str(self.root / "ledger"),
             "USERPROFILE": str(self.root / "home"),

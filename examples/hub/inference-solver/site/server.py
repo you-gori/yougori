@@ -27,10 +27,12 @@ import google_protocol
 import harness_download
 import routing
 from device_auth import Devices
-from compute import Compute, ComputeInput
+from compute import Compute, ComputeInput, MOST_PER_COMPUTER
 from media import Media, MediaInput
 from sandbox_grid import Grid, GridInput
 from payments import Payments, WalletInput
+from subscriptions import SubscriptionInput
+from rentals import Rentals
 from store import AccountError, Store, digest
 from upstream import UpstreamError, address, discover_catalog
 
@@ -49,6 +51,7 @@ HOMES = ("harnesses", "models", "sandboxes")
 # The colour styles in style.css; the administrator's choice applies to every visitor.
 PALETTES = ("navy", "nord", "solarized", "catppuccin", "rose-pine", "gruvbox")
 NOT_OFFERED = "The administrator of this inference has not offered this harness."
+UNPUBLISHED = "The administrator has not published this harness's Sandbox VM image yet."
 
 
 class ChoiceInput(ValueError):
@@ -68,6 +71,8 @@ class Service:
         self.router = self.compute.router = routing.Router()
         self.grid = Grid(self.store)
         self.payments = Payments(self.store)
+        # GPUs the website rents from neoclouds itself, with the administrator's provider keys.
+        self.rentals = Rentals(self.store, self.compute)
         self.control = self.compute.control
         self.stopped = threading.Event()
         # Media jobs (images, video, speech, sound) through the same keys, routing and billing.
@@ -139,6 +144,11 @@ class Service:
         while not self.stopped.is_set():
             try:
                 self.refresh()
+                # Rented GPUs are watched while nobody has Admin open: one whose model cannot
+                # start is deleted, so it stops charging.
+                self.rentals.refresh()
+                # Models listed before models were checked get their check.
+                self.compute.check_listed()
             except (sqlite3.Error, OSError):
                 # Disk pressure or a temporary database lock must not silently
                 # end health monitoring for the lifetime of the server.
@@ -149,6 +159,28 @@ class Service:
         """Whether people may set up this harness here. Names outside the catalogue, such as the
         contributor's `node` bundle, are not choices; their own checks apply."""
         return name not in self.store.choices()["hidden"]
+
+    @staticmethod
+    def setup(name, published=None):
+        """Whether this harness's own Sandbox VM image is ready here (/api/harness-image/NAME): what
+        every launcher that starts a harness from its own image checks, the ones from before the
+        Yougori harness included. Yougori's own agent has no image of its own. A harness the
+        launcher has no package for cannot start."""
+        if name not in harness_download.catalog():
+            return {"available": False, "reason": UNPUBLISHED, "version": None}
+        return harness_download.availability(name, published)
+
+    @staticmethod
+    def held(name, published=None):
+        """Whether this harness starts inside the Yougori harness here: from the Yougori harness's
+        base image and the harness's pack (Yougori's own agent needs no pack)."""
+        return harness_download.held(name, published)
+
+    def offered_names(self):
+        """The catalogue harnesses people may set up here: offered by the administrator and not
+        blocked in the catalogue."""
+        hidden = set(self.store.choices()["hidden"])
+        return {name for name, spec in harness_download.catalog().items() if name not in hidden and not spec.get("blocked")}
 
     def choose(self, actor, data):
         """The administrator's main page and the catalogue harnesses offered here."""
@@ -336,8 +368,10 @@ class Handler(BaseHTTPRequestHandler):
             if method == "GET" and path == "/v1/models":
                 models = store.models(key["scopes"])
                 # Each entry names the kind of model, as Yougori's model server does, so a client
-                # reading the catalog knows which take jobs and which answer chat.
+                # reading the catalog knows which take jobs and which answer chat, and the context
+                # its ready servers report (the smallest), so a harness sizes its conversation by it.
                 return self.json(200, {"object": "list", "data": [{"id": m["id"], "object": "model", "owned_by": "inference-solver", "task": m["task"],
+                                                                  **({"context_length": m["context_length"]} if "context_length" in m else {}),
                                                                   "capabilities": {"structuredOutput": m["features"]["json"], **({"media": m["task"]} if "media" in m["features"] else {})}}
                                                                  for m in models if m["state"] == "ready"]})
             if service.media.route(self, key, method, path, urlsplit(self.path).query):
@@ -382,19 +416,42 @@ class Handler(BaseHTTPRequestHandler):
             parts = path.removeprefix("/api/harness-image/").split("/")
             if len(parts) not in (1, 2, 3):
                 return self.error(404, "This VM image is unavailable.")
-            if not service.offered(parts[0]):
-                return self.error(404, NOT_OFFERED)
             published = service.hosted.get('artifacts') if service.hosted else None
-            if published is not None:
-                record = published.get('images', {}).get(parts[0])
-                if len(parts) != 1 or not record:
-                    return self.error(404, "This artifact is not published here.")
-                return self.json(200, {**record, 'download_base': published['base']})
-            value = harness_download.vm_image(*parts)
+            if parts[0] == harness_download.YOUGORI:
+                # Every harness offered here starts from the Yougori harness's images, Yougori's own
+                # agent hidden or not: they list only the packs of the harnesses offered here and not
+                # blocked, and the bases those start from, and only the files they list are served.
+                # Nothing is, when the catalogue blocks the Yougori harness itself or has none.
+                own = harness_download.catalog().get(parts[0])
+                if own is None or own.get("blocked"):
+                    return self.error(404, "This VM image is unavailable.")
+                record = published.get('images', {}).get(parts[0]) if published is not None else harness_download.vm_image(parts[0])
+                shown = harness_download.offered_image(harness_download.yougori_image(record), service.offered_names()) if record else None
+                if shown is not None and not shown["packs"]:
+                    return self.error(404, NOT_OFFERED)
+                if published is not None:
+                    if len(parts) != 1 or shown is None:
+                        return self.error(404, "This artifact is not published here.")
+                    return self.json(200, {**shown, 'download_base': published['base']})
+                if shown is None:
+                    return self.error(404, "The administrator has not prepared the Yougori harness's VM images yet.")
+                if len(parts) == 1:
+                    return self.json(200, shown)
+                listed = shown["packs"].values() if parts[2:] == ["tool"] else shown["bases"].values()
+                value = harness_download.vm_image(*parts) if parts[1] in {item.get("sha256") for item in listed} else None
+            else:
+                if not service.offered(parts[0]):
+                    return self.error(404, NOT_OFFERED)
+                if published is not None:
+                    record = published.get('images', {}).get(parts[0])
+                    if len(parts) != 1 or not record:
+                        return self.error(404, "This artifact is not published here.")
+                    return self.json(200, {**record, 'download_base': published['base']})
+                value = harness_download.vm_image(*parts)
+                if value is not None and len(parts) == 1:
+                    return self.json(200, value)
             if value is None:
                 return self.error(404, "The administrator has not prepared this harness's Yougori VM image yet.")
-            if len(parts) == 1:
-                return self.json(200, value)
             with value.open("rb") as stream:
                 self.begin(200, "application/gzip" if value.suffix == '.gz' else "application/zip", value.stat().st_size)
                 while block := stream.read(1024 * 1024):
@@ -410,14 +467,20 @@ class Handler(BaseHTTPRequestHandler):
         if method == "GET" and path == "/api/harnesses":
             # Hidden harnesses stay listed, unavailable with the reason, so `yougori inference run`
             # explains why instead of failing to find them; the pages list only the offered ones.
+            # Every catalogue field passes through: `yougori inference run` asks each harness's
+            # `questions` and sizes its VM from `size`. `setup` says whether the harness's own image
+            # is ready (Service.setup), as every launcher that starts a harness from its own image
+            # reads it, older ones included; `held` says whether it starts inside the Yougori
+            # harness here (Service.held), from the Yougori harness's base image and its pack.
             hidden = set(store.choices()["hidden"])
             published = service.hosted.get('artifacts') if service.hosted else None
             listed = []
             for h in service.harnesses:
-                setup = harness_download.availability(h['id'], published)
+                setup, held = service.setup(h['id'], published), service.held(h['id'], published)
                 if h['id'] in hidden:
                     setup = {**setup, "available": False, "reason": NOT_OFFERED}
-                listed.append({**h, "offered": h['id'] not in hidden, "setup": setup})
+                    held = {**held, "available": False, "reason": NOT_OFFERED}
+                listed.append({**h, "offered": h['id'] not in hidden, "setup": setup, "held": held})
             return self.json(200, {"harnesses": listed, "categories": service.categories})
         if method == "GET" and path.startswith("/api/harness-download/"):
             name = path.removeprefix("/api/harness-download/")
@@ -437,11 +500,22 @@ class Handler(BaseHTTPRequestHandler):
         if method == "GET" and path == "/api/models":
             catalog = store.models()
             if not user:
-                fields = ("id", "upstream", "state", "protocols", "features", "price", "cache", "censorship", "censorship_source", "task", "media_price")
-                catalog = [{field: model[field] for field in fields} for model in catalog]
+                # "detail": what a model still starting is doing (a download's progress), never which computer.
+                fields = ("id", "upstream", "state", "detail", "protocols", "features", "price", "cache", "censorship", "censorship_source", "task", "media_price")
+                catalog = [{field: model[field] for field in fields if field in model} for model in catalog]
             return self.json(200, {"models": catalog})
         if method == "GET" and path == "/api/sandboxes":
             return self.json(200,service.grid.catalog())
+        if method == "GET" and path == "/api/compute/models":
+            # What `yougori inference connect` offers a computer to install: the administrator's list.
+            return self.json(200, {"models": service.compute.offered(), "most": MOST_PER_COMPUTER, "needs": service.compute.needs()})
+        if method == "GET" and path == "/api/compute/rental-agent":
+            # A rented GPU downloads its agent with its own credential (neocloud.boot).
+            auth = self.headers.get("Authorization", "")
+            service.rentals.agent(auth[7:] if auth.startswith("Bearer ") else "")
+            raw = harness_download.bundle("rental", ("https://" if service.public else "http://") + host)
+            self.begin(200, "application/zip", len(raw))
+            return self.wfile.write(raw)
         if method != "GET":
             origin = self.headers.get("Origin", "")
             if origin != ("https://" if service.public else "http://") + host:
@@ -527,6 +601,22 @@ class Handler(BaseHTTPRequestHandler):
             action = {'/api/payments/invoice':service.payments.create, '/api/payments/submit':service.payments.submit,
                       '/api/payments/cancel':service.payments.cancel}[path]
             return self.json(200, action(user['id'], self.body()))
+        # Subscriptions: the plans offered and one's own, bought from the balance; Admin manages the
+        # plans and can reset anyone's window.
+        if method == "GET" and path == "/api/subscriptions":
+            return self.json(200, service.payments.subscriptions.snapshot(user["id"]))
+        if method == "POST" and path == "/api/subscriptions/subscribe":
+            if not service.throttle('payments:' + user['id']):
+                return self.error(429, 'Too many payment requests. Wait one minute.', retry=True)
+            return self.json(200, service.payments.subscriptions.subscribe(user["id"], self.body(), Payments.balance))
+        if method == "GET" and path == "/api/admin/subscriptions":
+            return self.json(200, service.payments.subscriptions.admin_snapshot())
+        if method == "POST" and path in ("/api/admin/subscriptions/plan", "/api/admin/subscriptions/remove", "/api/admin/subscriptions/reset",
+                                         "/api/admin/subscriptions/switch"):
+            subscriptions = service.payments.subscriptions
+            action = {"/api/admin/subscriptions/plan": subscriptions.save_plan, "/api/admin/subscriptions/remove": subscriptions.remove_plan,
+                      "/api/admin/subscriptions/reset": subscriptions.reset, "/api/admin/subscriptions/switch": subscriptions.switch}[path]
+            return self.json(200, action(user["id"], self.body()))
         if method == "POST" and path == "/api/admin/prices":
             return self.json(200, service.payments.price(user['id'],self.body()))
         if method == "POST" and path == "/api/admin/wallet":
@@ -545,6 +635,27 @@ class Handler(BaseHTTPRequestHandler):
             return self.json(200, service.compute.snapshot())
         if method == "POST" and path == "/api/admin/compute/jobs":
             return self.json(202, service.compute.submit(user["id"], self.body()))
+        if method == "GET" and path == "/api/admin/rentals":
+            service.rentals.refresh()
+            return self.json(200, service.rentals.view())
+        if method == "POST" and path == "/api/admin/rentals/account":
+            return self.json(200, service.rentals.connect(user["id"], self.body()))
+        if method == "POST" and path == "/api/admin/rentals/forget":
+            return self.json(200, service.rentals.forget(user["id"], self.body().get("provider")))
+        if method == "POST" and path == "/api/admin/rentals/check":
+            return self.json(200, service.rentals.check(self.body().get("model")))
+        if method == "POST" and path == "/api/admin/rentals/offers":
+            return self.json(200, service.rentals.quote(user["id"], self.body()))
+        if method == "POST" and path == "/api/admin/rentals/rent":
+            # The GPU connects back to the address this page came from.
+            return self.json(201, service.rentals.rent(user["id"], self.body(), ("https://" if service.public else "http://") + host))
+        if method == "POST" and path == "/api/admin/rentals/stop":
+            return self.json(200, service.rentals.stop(user["id"], self.body().get("id")))
+        if method == "POST" and path == "/api/admin/compute/models":
+            return self.json(200, service.compute.offer(user["id"], self.body().get("models")))
+        if method == "POST" and path == "/api/admin/compute/admission":
+            service.compute.admit(user["id"], self.body().get("open"))
+            return self.json(200, {"open": service.compute.admission()})
         if method == "POST" and path == "/api/admin/compute/password":
             service.compute.policy(user["id"], self.body().get("password", ""))
             return self.json(200, {"ok": True})
@@ -613,7 +724,7 @@ class Handler(BaseHTTPRequestHandler):
             self.dispatch(method)
         except MediaInput as error:
             self.json(error.status, {"error": {"code": error.code, "message": str(error)}})
-        except (AccountError, ChoiceInput, ComputeInput, GridInput, WalletInput) as error:
+        except (AccountError, ChoiceInput, ComputeInput, GridInput, WalletInput, SubscriptionInput) as error:
             self.error(400, str(error))
         except (ValueError, TypeError, KeyError, UnicodeError, RecursionError):
             self.error(400, "Check the supplied values and try again.")

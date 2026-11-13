@@ -534,6 +534,7 @@ mod tests {
             vsock_cid: None,
             egress_endpoints: Vec::new(),
             workload_image: None,
+            targets: None,
         };
         let plan = plan_launch(
             &launch.request,

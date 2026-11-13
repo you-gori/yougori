@@ -69,6 +69,7 @@ h1,h2,h3{margin:0;font-weight:350}
 .filter-dots .filter-dot+.filter-dot{margin-left:-2px}
 .filter-dot{width:10px;height:10px;flex:none;border-radius:50%;background:var(--category-blue,var(--ink))}
 .filter-menu{position:absolute;left:0;top:calc(100% + 8px);z-index:20;display:flex;flex-direction:column;min-width:270px;padding:8px;border-radius:16px;background:var(--bg);box-shadow:0 0 0 1px var(--line),0 18px 40px -20px rgb(11 31 77 / 40%)}
+.filter-menu:focus{outline:none}
 .filter-option{flex-direction:row;align-items:center;gap:12px;padding:10px 12px;border-radius:10px;font-size:15px;font-weight:400;cursor:pointer}
 .filter-option:hover{background:var(--panel)}
 .filter-option input[type="checkbox"]{width:18px;height:18px;margin:0;flex:none;accent-color:var(--category-blue,var(--ink));cursor:pointer}
@@ -79,11 +80,17 @@ h1,h2,h3{margin:0;font-weight:350}
 .device-actions{display:flex;flex-wrap:wrap;gap:12px}
 .harness-install{min-width:0}
 .harness-install .code{white-space:pre-wrap;overflow-wrap:anywhere}
+/* Yougori's page: the harnesses inside it, one row each under their group's heading: the name, its line,
+   its state and Copy command side by side, then what it asks. Phones put the line under the name. */
+.harness-install .list .entry-name{font-size:19px}
+.harness-install .panel-body>.list:first-child>.entry:first-child{padding-top:0;border-top:0}
+.list.inside .entry{gap:4px;padding:12px 0}
+.list.inside .entry-head{display:grid;grid-template-columns:10.5rem minmax(0,1fr) auto auto;align-items:baseline;gap:4px 16px}
+.list.inside .entry-name{font-size:17px}
+.list.inside .entry-meta{padding-left:calc(10.5rem + 16px)}
+@media (max-width:640px){.list.inside .entry-head{grid-template-columns:minmax(0,1fr) auto auto}.list.inside .entry-head>.entry-text{grid-area:2 / 1 / 3 / -1}.list.inside .entry-meta{padding-left:0}}
 /* Local GPUs and Rent a cloud GPU join Admin's column directly. */
 #compute-setup,.compute-options{display:contents}
-.install-heading{display:flex;justify-content:space-between;align-items:start;gap:24px}
-.install-heading h2{margin-top:0}
-.install-heading button{flex:none}
 .install-command{display:flex;gap:16px;align-items:center;flex-wrap:wrap}
 .install-command pre{flex:1;min-width:180px;margin:0}
 .install-details{padding:18px 24px;border:1px solid var(--line);background:var(--panel)}
@@ -127,9 +134,11 @@ h1,h2,h3{margin:0;font-weight:350}
 #compute-activity .source p{margin:0}
 @container (min-width:620px){.compute-rent{display:grid;grid-template-columns:minmax(0,1fr) minmax(0,1fr);gap:24px}}
 
+/* Width: header, page and footer keep to 1360px, centred, with room on both sides of wide screens. */
+:root{--page:1360px;--side:clamp(24px,4vw,64px)}
 /* Header: navigation on the left, the name centred, the account actions on the right. */
 .site-header{position:sticky;top:0;z-index:50;background:var(--bg)}
-.header-inner{display:grid;grid-template-columns:1fr auto 1fr;align-items:center;gap:24px;height:72px;padding:0 24px}
+.header-inner{display:grid;grid-template-columns:1fr auto 1fr;align-items:center;gap:24px;max-width:calc(var(--page) + 2 * var(--side));height:72px;margin:0 auto;padding:0 var(--side)}
 .quick{display:contents}
 #nav{grid-column:1;grid-row:1;display:flex;gap:20px;min-width:0}
 #nav a{font-size:14px;font-weight:450;letter-spacing:-.03em;text-decoration:none;white-space:nowrap;opacity:.64}
@@ -146,7 +155,7 @@ h1,h2,h3{margin:0;font-weight:350}
 @media (max-width:900px){.header-inner{grid-template-columns:1fr auto}.brand{grid-column:1;font-size:22px}.quick{display:none}.nav{display:block;grid-column:2;grid-row:1}}
 
 /* Page: a two-tone heading, the description continuing it in grey. */
-main{flex:1;width:100%;padding:40px 24px 80px}
+main{flex:1;width:100%;max-width:calc(var(--page) + 2 * var(--side));margin:0 auto;padding:40px var(--side) 80px}
 .page-head{display:flex;align-items:flex-end;justify-content:space-between;flex-wrap:wrap;gap:20px 40px;margin-bottom:40px}
 .page-head>div:first-child{max-width:940px;min-width:0}
 .page-head h1,.page-head .muted{font-size:clamp(30px,3.4vw,42px);line-height:1.12;letter-spacing:-.04em;overflow-wrap:anywhere}
@@ -245,6 +254,7 @@ td{padding:16px 12px 16px 0;border-bottom:1px solid var(--line)}
 .entry-facts dd{margin:2px 0 0;font-size:14px;overflow-wrap:anywhere}
 .entry-meta{display:flex;justify-content:space-between;gap:12px;margin:auto 0 0;padding-top:14px;color:var(--muted);font-size:13.5px;overflow-wrap:anywhere}
 .entry-more{color:var(--ink);text-decoration:underline;text-underline-offset:3px;white-space:nowrap}
+.entry-kind{margin:0;color:var(--faint);font-size:13.5px;overflow-wrap:anywhere}
 /* Models: rows under thin lines. */
 .list{border-bottom:1px solid var(--line)}
 .list .entry{padding:22px 0;border-top:1px solid var(--line)}
@@ -253,6 +263,57 @@ td{padding:16px 12px 16px 0;border-bottom:1px solid var(--line)}
 .list .entry-meta{display:block;margin:0;padding:0}
 .list .entry:hover .entry-name{opacity:.72}
 .model-id{font-family:var(--mono);font-size:12px}
+
+/* The main page: harnesses (Yougori, holding them), models and sandboxes side by side, each a heading
+   over its own list. The columns share two rows, so the headings and the lists start on the same
+   lines whatever the length of each description. A shorter list stays in view while a longer one
+   scrolls (fitColumns in app.js). Narrow screens stack the columns. */
+.overview{display:grid;grid-auto-flow:column;grid-auto-columns:minmax(0,1fr);grid-template-rows:auto auto;gap:22px 32px}
+.column{grid-row:span 2;display:grid;grid-template-rows:subgrid;min-width:0}
+.column-body.stuck{position:sticky;top:96px}
+.column-head{display:flex;align-items:flex-start;justify-content:space-between;flex-wrap:wrap;gap:8px 16px;padding-top:16px;border-top:1px solid var(--ink)}
+.column-head h2{font-size:26px;line-height:1.15;letter-spacing:-.04em}
+.column-head .hint{margin-top:4px}
+.column-head .text-button{font-size:14px;white-space:nowrap}
+.column-body{align-self:start;display:flex;flex-direction:column;gap:12px;min-width:0;container-type:inline-size}
+/* In a column the catalog's controls are smaller: the search on its own row, filter and sort under it. */
+.column .toolbar{gap:8px}
+.column .search-box{flex:1 1 100%;order:-1;min-width:0;height:40px}
+.column :is(.filter-button,.toggle,.sort select){height:36px;min-height:36px;font-size:14px}
+.column .toggle{padding:0 16px}
+.column .sort{flex:0 0 auto;margin-left:auto}
+.column .sort select{min-width:150px}
+.column .count{margin:6px 0 10px}
+.column .catalog-note{margin-top:14px}
+.column .entries.grid{grid-template-columns:minmax(0,1fr)}
+@container (min-width:560px){.column .entries.grid{grid-template-columns:repeat(2,minmax(0,1fr))}}
+@container (min-width:840px){.column .entries.grid{grid-template-columns:repeat(3,minmax(0,1fr))}}
+/* Models are the same flat cards as the tools; sandboxes' computers are panels already. */
+.column .list{display:grid;gap:8px;border:0}
+.column .list .entry{padding:18px 20px;border:0;background:var(--panel);transition:background-color .2s}
+.column .list .entry:hover{background:var(--chip)}
+.column .list .entry:hover .entry-name{opacity:1}
+.column .grid .entry{padding:18px 20px 16px}
+.column .entry-name{font-size:19px}
+.column .resource-grid{grid-template-columns:minmax(0,1fr);gap:8px;margin:0}
+.column .empty{padding:40px 20px}
+/* API keys: a dropdown beside the main page's title, in place of a page of its own. */
+.keys-menu{position:relative}
+.keys-panel{position:absolute;right:0;top:calc(100% + 8px);z-index:40;display:flex;flex-direction:column;gap:18px;width:min(440px,calc(100vw - 32px));max-height:min(680px,calc(100vh - 170px));overflow:auto;padding:22px 24px;border-radius:16px;background:var(--bg);box-shadow:0 0 0 1px var(--line),0 18px 40px -20px rgb(11 31 77 / 40%)}
+.keys-panel h3{font-size:19px;letter-spacing:-.03em}
+.keys-panel .stack{gap:12px}
+.keys-actions{display:flex;flex-wrap:wrap;align-items:center;gap:14px}
+.keys-mine{padding-top:16px;border-top:1px solid var(--line)}
+.key-list{list-style:none;margin:8px 0 0;padding:0}
+.key-list li{display:flex;align-items:center;justify-content:space-between;gap:12px;padding:10px 0;border-bottom:1px solid var(--line)}
+.key-list li:last-child{border-bottom:0}
+.key-list li>div{min-width:0}
+.key-list strong{display:block;font-weight:450}
+.key-list span{color:var(--muted);font-size:13px}
+.key-list button{flex:none;white-space:nowrap}
+.keys-panel .code{background:var(--panel)}
+@media (max-width:900px){.keys-panel{left:0;right:auto}}
+@media (max-width:900px){.overview{display:flex;flex-direction:column;gap:48px}.column{display:flex;flex-direction:column;gap:22px}.column-body{align-self:stretch}}
 
 /* A tool's or model's own page: steps beside the facts. */
 .detail{display:grid;grid-template-columns:minmax(0,1fr) 380px;gap:8px;align-items:start}
@@ -286,6 +347,14 @@ td{padding:16px 12px 16px 0;border-bottom:1px solid var(--line)}
 .admin-row>.hint{flex:1 1 220px;align-self:center}
 .admin-row>:is(button,a){flex:none}
 .admin-row>.text-button{align-self:center}
+/* Subscriptions: a plan's Remove sits on the line of its Save; plans are divided by a line; the
+   share of a window's limit used is a thin bar. */
+.subscription-plan .admin-row>.text-button{align-self:flex-end;height:44px}
+.subscription-plan+.subscription-plan{padding-top:16px;border-top:1px solid var(--line)}
+.plan-models{min-width:0;margin:0;padding:0;border:0}
+.plan-models legend{margin-bottom:8px;padding:0;font-size:14px;font-weight:450}
+.subscription-meter{height:6px;border-radius:75px;background:var(--chip);overflow:hidden}
+.subscription-meter i{display:block;height:100%;width:0;background:var(--deep)}
 .admin-command{display:flex;align-items:center;gap:10px}
 .admin-command .code{flex:1;min-width:0;padding:11px 16px}
 /* Local GPUs: the commands a computer runs, in order, each a short name, then the command and its Copy. */
@@ -376,8 +445,8 @@ dialog::backdrop{background:rgb(11 31 77 / 30%)}
 .modal-top .plain{font-size:22px;line-height:1}
 .modal-body{padding:10px 24px 26px}
 #dialog-title{margin-bottom:16px;font-size:28px;letter-spacing:-.035em}
-.foot{padding:0 24px}
-.foot-inner{display:flex;justify-content:space-between;align-items:flex-end;flex-wrap:wrap;gap:16px 32px;padding:36px 0 40px;border-top:1px solid var(--line);color:var(--deep)}
+.foot{padding:0 var(--side)}
+.foot-inner{max-width:var(--page);margin:0 auto;display:flex;justify-content:space-between;align-items:flex-end;flex-wrap:wrap;gap:16px 32px;padding:36px 0 40px;border-top:1px solid var(--line);color:var(--deep)}
 .foot-inner p{margin:0}
 .foot-name{margin-bottom:6px!important;font-size:25px;letter-spacing:-.04em}
 .foot a{text-decoration:none}

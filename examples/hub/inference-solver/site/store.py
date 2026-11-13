@@ -16,13 +16,16 @@ import unicodedata
 
 # Common markers in the names of models published without refusal training. An administrator's label wins.
 UNCENSORED = re.compile(r"uncensor|decensor|abliterat|obliterat|unfilter|unalign|heretic|dolphin", re.I)
-# Replica states, best first: a model takes the state of its best replica.
-STATES = ("ready", "checking", "stale", "unavailable")
+# Replica states, best first: a model takes the state of its best replica. "loading": a connected
+# computer is still downloading or loading the model, and it answers once loaded.
+STATES = ("ready", "loading", "checking", "stale", "unavailable")
 # The kinds of model the media runner serves: a Yougori model server says its task in its catalog
 # and health, and a connector reports it; such a model takes jobs, not chat.
 MEDIA_TASKS = ("text-to-image", "image-to-image", "text-to-video", "image-to-video", "text-to-audio", "text-to-speech")
 # Completed requests with reported cache use before a model's cache hit rate is published.
 CACHE_MINIMUM = 5
+# The contexts, in tokens, a server may report for a model; others are not believed.
+CONTEXTS = (256, 1048576)
 
 
 class AccountError(ValueError):
@@ -107,6 +110,9 @@ class Store:
                 -- The kind of model each replica's server serves (text-generation, or a media task such as
                 -- text-to-image), as its catalog or connector reported it; replaced with the model rows.
                 CREATE TABLE IF NOT EXISTS model_tasks (id TEXT PRIMARY KEY, task TEXT NOT NULL);
+                -- The context, in tokens, each replica's server serves, as its catalog or connector
+                -- reported it; replaced with the model rows. No row: its server did not say.
+                CREATE TABLE IF NOT EXISTS model_contexts (id TEXT PRIMARY KEY, context INTEGER NOT NULL);
                 -- What a media job made, beside its request row: images, milliseconds of video or audio, GPU time.
                 CREATE TABLE IF NOT EXISTS request_media (id TEXT PRIMARY KEY, images INTEGER NOT NULL, output_ms INTEGER NOT NULL, compute_ms INTEGER NOT NULL);
                 CREATE TABLE IF NOT EXISTS token_prices (model TEXT PRIMARY KEY, input_microusd INTEGER NOT NULL, output_microusd INTEGER NOT NULL);
@@ -178,10 +184,12 @@ class Store:
     @staticmethod
     def replace_models(db, endpoint_id, catalog):
         """The models one endpoint serves, as its catalog reports them: `catalog` is a list of
-        (name, features) with features {"json": True|False|None, "task": str|None}. Earlier rows
-        of the endpoint go."""
+        (name, features) with features {"json": True|False|None, "task": str|None, "context":
+        int|None} (context: the tokens its server serves, 256 to 1,048,576). Earlier rows of the
+        endpoint go."""
         db.execute("DELETE FROM model_features WHERE id IN (SELECT id FROM models WHERE endpoint_id=?)", (endpoint_id,))
         db.execute("DELETE FROM model_tasks WHERE id IN (SELECT id FROM models WHERE endpoint_id=?)", (endpoint_id,))
+        db.execute("DELETE FROM model_contexts WHERE id IN (SELECT id FROM models WHERE endpoint_id=?)", (endpoint_id,))
         db.execute("DELETE FROM models WHERE endpoint_id=?", (endpoint_id,))
         for name, features in catalog:
             identity = endpoint_id + ":" + name
@@ -191,6 +199,9 @@ class Store:
             task = (features or {}).get("task")
             if isinstance(task, str) and task:
                 db.execute("INSERT INTO model_tasks VALUES(?,?)", (identity, task[:40]))
+            context = (features or {}).get("context")
+            if type(context) is int and CONTEXTS[0] <= context <= CONTEXTS[1]:
+                db.execute("INSERT INTO model_contexts VALUES(?,?)", (identity, context))
 
     @staticmethod
     def audit(db, user, action, target):
@@ -321,9 +332,9 @@ class Store:
         model servers) serve it. The name is the model's own name, as its servers report it."""
         now = int(time.time())
         with self.db() as db:
-            rows = db.execute("SELECT m.upstream,e.name AS source,e.place,e.state,e.checked,f.json,t.task FROM models m "
+            rows = db.execute("SELECT m.upstream,e.name AS source,e.place,e.state,e.checked,e.detail,f.json,t.task,c.context FROM models m "
                               "JOIN endpoints e ON e.id=m.endpoint_id LEFT JOIN model_features f ON f.id=m.id LEFT JOIN model_tasks t ON t.id=m.id "
-                              "ORDER BY m.upstream,e.name").fetchall()
+                              "LEFT JOIN model_contexts c ON c.id=m.id ORDER BY m.upstream,e.name").fetchall()
             labels = {r[0]: r[1] for r in db.execute("SELECT id,uncensored FROM model_labels")}
             prices = {r["model"]: r for r in db.execute("SELECT * FROM token_prices")}
             cached = {r[0]: r[1] for r in db.execute("SELECT model,cached_microusd FROM token_cache_prices")}
@@ -342,6 +353,8 @@ class Store:
             states = [r["state"] if r["checked"] > now - 90 else "stale" for r in replicas]
             # One ready replica makes the model available.
             state = min(states, key=lambda s: STATES.index(s) if s in STATES else len(STATES))
+            # A model still loading says what its computer is doing, in the website's own words.
+            preparing = next((r["detail"] for r, s in zip(replicas, states) if s == "loading" and r["detail"]), None) if state == "loading" else None
             places = {r["place"] for r in replicas}
             price, label, stats = prices.get(name), labels.get(name), cache.get(name)
             inputs = price["input_microusd"] if price else 0
@@ -354,7 +367,12 @@ class Store:
             task = tasks.pop() if len(tasks) == 1 else "mixed" if tasks else "text-generation"
             media = task in MEDIA_TASKS
             media_price = media_prices.get(name)
-            catalog.append({"id": name, "upstream": name, "state": state, "checked": max(r["checked"] for r in replicas),
+            # The context a request can count on whichever replica serves it: the smallest a ready
+            # replica's server reports. None reported: unknown, and the catalog does not say.
+            contexts = [r["context"] for r, s in zip(replicas, states) if s == "ready" and r["context"]]
+            catalog.append({"id": name, "upstream": name, "state": state, **({"detail": preparing} if preparing else {}),
+                            **({"context_length": min(contexts)} if contexts else {}),
+                            "checked": max(r["checked"] for r in replicas),
                             "place": places.pop() if len(places) == 1 else "mixed",
                             "source": ", ".join(r["source"] for r in replicas),
                             "replicas": [{"name": r["source"], "place": r["place"], "state": s} for r, s in zip(replicas, states)],

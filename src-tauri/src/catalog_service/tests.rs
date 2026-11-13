@@ -198,10 +198,8 @@ fn the_engine_registers_model_files_sidecars_and_helpers_and_nothing_else() {
     let status = respond(&refused, None).unwrap();
     assert_eq!(status["state"], "refused");
     assert_eq!(status["refusal"]["refusal"], "storage");
-    assert!(status["remedy"]
-        .as_str()
-        .unwrap()
-        .contains(CATALOG_ROOT_SETTING));
+    // The remedy names the variable this build takes the root from.
+    assert!(status["remedy"].as_str().unwrap().contains(ROOT_SETTING));
 }
 
 #[test]
@@ -283,9 +281,20 @@ fn classes_with_keys_in_the_trust_roots_get_the_signed_verifier() {
 #[test]
 fn the_method_answers_whatever_this_computer_configures_and_a_reload_reaches_no_closed_catalog() {
     // Whatever the variables say on this computer, the method answers with a state and
-    // refuses unknown actions; a reload never opens the catalog.
+    // refuses unknown actions; a reload never opens the catalog. A test binary inherits the
+    // owner's environment, YOUGORI_CATALOG_ROOT included, and reads none of the catalog's
+    // variables: the engine's catalog here never opens the owner's.
+    assert_eq!(engine_variable(CATALOG_ROOT_SETTING), None);
+    assert_eq!(engine_variable(ACCEPTANCE_ROOT_SETTING), None);
     let status = dispatch(None).unwrap();
     assert!(status["state"].is_string(), "{status}");
+    if let Some(inherited) = std::env::var_os(CATALOG_ROOT_SETTING) {
+        assert_ne!(
+            status["root"].as_str().map(OsStr::new),
+            Some(inherited.as_os_str()),
+            "{status}"
+        );
+    }
     assert!(dispatch(Some("unknown".to_owned())).is_err());
     let reloaded = crate::trust_roots::dispatch(Some("reload".to_owned())).unwrap();
     assert!(reloaded.get("catalog").is_some(), "{reloaded}");
@@ -1606,6 +1615,329 @@ fn the_default_root_lives_under_the_data_folder_when_its_volume_has_room_and_the
         CatalogLocation::NotConfigured { .. }
     ));
     assert_eq!(policy, DefaultPolicy::Off);
+}
+
+/// The installed engine beside a disposable one in `dir`: its data folder, and the root the
+/// owner's YOUGORI_CATALOG_ROOT names, which the disposable engine inherits.
+fn installed_engine(dir: &Path) -> InstalledEngine {
+    InstalledEngine {
+        data_folder: Some(dir.join("installed-data")),
+        configured_root: Some(dir.join("owners-catalog").into_os_string()),
+    }
+}
+
+#[test]
+fn an_acceptance_engine_never_uses_the_inherited_root_and_takes_its_own() {
+    let dir = tempfile::tempdir().unwrap();
+    let installed = installed_engine(dir.path());
+    let own_data = dir.path().join("acceptance-data");
+    let gib = 1u64 << 30;
+    // Unset: the catalog folder in its own data folder under the installed engine's default
+    // policy, never the root the inherited YOUGORI_CATALOG_ROOT names.
+    let (settings, policy) =
+        Settings::for_acceptance(None, None, Some(&own_data), Some(100 * gib), &installed);
+    let default_root = own_data.join(DEFAULT_ROOT_FOLDER);
+    assert_eq!(
+        settings.location,
+        CatalogLocation::Directory {
+            setting: ACCEPTANCE_DEFAULT_ROOT_SETTING,
+            path: default_root.clone()
+        }
+    );
+    assert_eq!(settings.quota, QuotaSetting::Bytes(DEFAULT_QUOTA_BYTES));
+    assert_eq!(
+        policy,
+        DefaultPolicy::Taken {
+            root: default_root,
+            free_bytes: 100 * gib
+        }
+    );
+    // Too little room there: declined, as for the installed engine.
+    let (settings, policy) =
+        Settings::for_acceptance(None, None, Some(&own_data), Some(gib), &installed);
+    assert_eq!(
+        settings.location,
+        CatalogLocation::NotConfigured {
+            setting: ACCEPTANCE_ROOT_SETTING
+        }
+    );
+    assert_eq!(policy, DefaultPolicy::TooLittleFree { free_bytes: gib });
+    // Set: its own folder, with the budget given.
+    let own = dir.path().join("test-catalog");
+    let (settings, policy) = Settings::for_acceptance(
+        Some(own.as_os_str()),
+        Some(OsStr::new("1048576")),
+        Some(&own_data),
+        Some(100 * gib),
+        &installed,
+    );
+    assert_eq!(
+        settings.location,
+        CatalogLocation::Directory {
+            setting: ACCEPTANCE_ROOT_SETTING,
+            path: own
+        }
+    );
+    assert_eq!(settings.quota, QuotaSetting::Bytes(1048576));
+    assert_eq!(policy, DefaultPolicy::Configured);
+    // A folder beside the installed engine's whose name merely starts like it is its own.
+    let beside = dir.path().join("installed-data-test");
+    let (settings, _) =
+        Settings::for_acceptance(Some(beside.as_os_str()), None, None, None, &installed);
+    assert!(matches!(
+        settings.location,
+        CatalogLocation::Directory { .. }
+    ));
+    // Off: no catalog.
+    let (settings, policy) = Settings::for_acceptance(
+        Some(OsStr::new(" Off ")),
+        None,
+        Some(&own_data),
+        Some(100 * gib),
+        &installed,
+    );
+    assert!(matches!(
+        settings.location,
+        CatalogLocation::NotConfigured { .. }
+    ));
+    assert_eq!(policy, DefaultPolicy::Off);
+    // No data folder of its own: no default root, and still never the inherited one.
+    let (settings, policy) =
+        Settings::for_acceptance(None, None, None, Some(100 * gib), &installed);
+    assert_eq!(
+        settings.location,
+        CatalogLocation::NotConfigured {
+            setting: ACCEPTANCE_ROOT_SETTING
+        }
+    );
+    assert_eq!(policy, DefaultPolicy::NoAcceptanceDataFolder);
+    assert!(settings
+        .location
+        .remedy()
+        .unwrap()
+        .contains(ACCEPTANCE_ROOT_SETTING));
+}
+
+#[test]
+fn an_acceptance_root_that_is_relative_or_the_installed_engines_opens_nothing() {
+    let dir = tempfile::tempdir().unwrap();
+    let installed = installed_engine(dir.path());
+    let installed_data = dir.path().join("installed-data");
+    let owners_root = dir.path().join("owners-catalog");
+    let installed_default = installed_data.join(DEFAULT_ROOT_FOLDER);
+    let own_data = dir.path().join("acceptance-data");
+    let gib = 1u64 << 30;
+    let mut refused = vec![
+        // The installed engine's default root, however it is spelled.
+        installed_default.clone(),
+        PathBuf::from(format!(
+            "{}{}",
+            installed_default.display(),
+            std::path::MAIN_SEPARATOR
+        )),
+        installed_data
+            .join("elsewhere")
+            .join("..")
+            .join(DEFAULT_ROOT_FOLDER),
+        // Its data folder, and anything in it.
+        installed_data.clone(),
+        installed_data.join("tests").join("catalog"),
+        // The root YOUGORI_CATALOG_ROOT names for the installed engine.
+        owners_root.clone(),
+        owners_root.join("."),
+    ];
+    if cfg!(windows) {
+        refused.push(PathBuf::from(
+            installed_default.display().to_string().to_uppercase(),
+        ));
+        refused.push(PathBuf::from(
+            owners_root.display().to_string().replace('\\', "/"),
+        ));
+    }
+    for path in &refused {
+        let (settings, policy) = Settings::for_acceptance(
+            Some(path.as_os_str()),
+            Some(OsStr::new("4096")),
+            Some(&own_data),
+            Some(100 * gib),
+            &installed,
+        );
+        assert!(
+            matches!(
+                &settings.location,
+                CatalogLocation::Invalid {
+                    setting: ACCEPTANCE_ROOT_SETTING,
+                    problem: LocationProblem::InstalledEngine { .. }
+                }
+            ),
+            "{path:?}: {:?}",
+            settings.location
+        );
+        assert_eq!(
+            policy,
+            DefaultPolicy::InstalledEngineRoot { root: path.clone() }
+        );
+    }
+    // Its own data folder inside the installed engine's: the default root there is refused.
+    let inside = installed_data.join("acceptance");
+    let (settings, policy) =
+        Settings::for_acceptance(None, None, Some(&inside), Some(100 * gib), &installed);
+    assert!(matches!(
+        settings.location,
+        CatalogLocation::Invalid {
+            problem: LocationProblem::InstalledEngine { .. },
+            ..
+        }
+    ));
+    assert_eq!(
+        policy,
+        DefaultPolicy::InstalledEngineRoot {
+            root: inside.join(DEFAULT_ROOT_FOLDER)
+        }
+    );
+    // A relative path is refused, and nothing falls back to the default.
+    let (settings, policy) = Settings::for_acceptance(
+        Some(OsStr::new("catalog")),
+        None,
+        Some(&own_data),
+        Some(100 * gib),
+        &installed,
+    );
+    assert_eq!(
+        settings.location,
+        CatalogLocation::Invalid {
+            setting: ACCEPTANCE_ROOT_SETTING,
+            problem: LocationProblem::NotAbsolute
+        }
+    );
+    assert_eq!(policy, DefaultPolicy::Configured);
+
+    // A refused root opens nothing and creates nothing; the status says why and what to do.
+    let (settings, _) = Settings::for_acceptance(
+        Some(installed_default.as_os_str()),
+        Some(OsStr::new("4096")),
+        Some(&own_data),
+        Some(100 * gib),
+        &installed,
+    );
+    let catalog = open(
+        &settings,
+        &mut untrusted(),
+        clock(),
+        Arc::new(FixedCalendar),
+    );
+    let status = respond(&catalog, None).unwrap();
+    assert_eq!(status["state"], "not_opened");
+    assert_eq!(status["setting"], ACCEPTANCE_ROOT_SETTING);
+    let remedy = status["remedy"].as_str().unwrap();
+    assert!(
+        remedy.contains(&installed_default.display().to_string())
+            && remedy.contains("installed Yougori engine's catalog")
+            && remedy.contains(ACCEPTANCE_ROOT_SETTING),
+        "{remedy}"
+    );
+    assert_eq!(not_open_detail(&catalog), remedy);
+    assert!(!installed_data.exists() && !own_data.exists());
+}
+
+/// Makes `link` a directory link to `target`: a junction on Windows, which needs no
+/// privilege, and a symbolic link elsewhere.
+fn make_directory_link(link: &Path, target: &Path) {
+    #[cfg(windows)]
+    {
+        let made = std::process::Command::new("cmd")
+            .args(["/C", "mklink", "/J"])
+            .arg(link)
+            .arg(target)
+            .output()
+            .unwrap();
+        assert!(made.status.success(), "{made:?}");
+    }
+    #[cfg(unix)]
+    std::os::unix::fs::symlink(target, link).unwrap();
+}
+
+#[test]
+fn an_acceptance_root_reached_through_a_link_into_the_installed_engines_folder_is_refused() {
+    let dir = tempfile::tempdir().unwrap();
+    let installed = installed_engine(dir.path());
+    let installed_data = dir.path().join("installed-data");
+    fs::create_dir_all(installed_data.join(DEFAULT_ROOT_FOLDER)).unwrap();
+    let link = dir.path().join("looks-like-a-test-folder");
+    make_directory_link(&link, &installed_data);
+    for path in [link.join(DEFAULT_ROOT_FOLDER), link.join("new-catalog")] {
+        let (settings, _) =
+            Settings::for_acceptance(Some(path.as_os_str()), None, None, None, &installed);
+        assert!(
+            matches!(
+                settings.location,
+                CatalogLocation::Invalid {
+                    problem: LocationProblem::InstalledEngine { .. },
+                    ..
+                }
+            ),
+            "{path:?}: {:?}",
+            settings.location
+        );
+    }
+    // Remove only the link itself, never what it leads to.
+    #[cfg(windows)]
+    fs::remove_dir(&link).unwrap();
+    #[cfg(unix)]
+    fs::remove_file(&link).unwrap();
+    assert!(installed_data.join(DEFAULT_ROOT_FOLDER).is_dir());
+}
+
+#[test]
+fn a_root_another_engine_holds_leaves_this_one_without_a_catalog_and_says_what_to_do() {
+    let dir = tempfile::tempdir().unwrap();
+    let root = dir.path().join("catalog");
+    let settings = Settings::from_values(Some(root.as_os_str()), Some(OsStr::new("4096")));
+    let holder = open(
+        &settings,
+        &mut untrusted(),
+        clock(),
+        Arc::new(FixedCalendar),
+    );
+    assert!(matches!(holder, EngineCatalog::Open { .. }));
+    let in_progress = root.join("records").join("in-progress.tmp");
+    fs::write(&in_progress, b"being written").unwrap();
+
+    let second = open_with_views(
+        &settings,
+        &mut untrusted(),
+        clock(),
+        Arc::new(FixedCalendar),
+        &ViewRegistry::new(),
+    );
+    let status = respond(&second, None).unwrap();
+    assert_eq!(status["state"], "refused");
+    assert_eq!(status["refusal"]["refusal"], "in_use");
+    assert_eq!(status["refusal"]["root"], root.display().to_string());
+    let remedy = status["remedy"].as_str().unwrap();
+    assert!(
+        remedy.contains(&root.display().to_string())
+            && remedy.contains("in use by another Yougori engine")
+            && remedy.contains("left it untouched")
+            && remedy.contains(ROOT_SETTING),
+        "{remedy}"
+    );
+    // A model run on the second engine is refused with the same words.
+    assert_eq!(not_open_detail(&second), remedy);
+    assert!(in_progress.exists(), "the holder's write in progress stays");
+
+    // Once the holder is gone, a restarted engine opens the root and recovers it.
+    drop(holder);
+    let restarted = open(
+        &settings,
+        &mut untrusted(),
+        clock(),
+        Arc::new(FixedCalendar),
+    );
+    let status = respond(&restarted, None).unwrap();
+    assert_eq!(status["state"], "open");
+    assert_eq!(status["recovery"]["temporaries_removed"], 1);
+    assert!(!in_progress.exists());
 }
 
 #[test]

@@ -1,0 +1,25 @@
+---
+source: src/ui/tests.rs
+expression: narrow
+---
+
+  ▀▄ ▄▀ ▄▀▀▄ █  █ ▄▀▀▀ ▄▀▀▄ █▀▀▄ ▀█▀
+    █   █  █ █  █ █ ▀█ █  █ █▀█   █     OpenCode  v1.0.0
+    ▀    ▀▀   ▀▀   ▀▀▀  ▀▀  ▀  ▀ ▀▀▀    qwen3-coder-30b
+
+  OpenCode 1.0 · build mode
+
+› Refactor the parser
+
+  Splitting the tokenizer out of the parser.
+
+  Plan  1 of 4 done
+  ◇ Read the parser
+  ◆ Split tokens from parsing  high
+  ○ Update the callers
+  ○ Run the tests
+╭──────────────────────────────────────────────────────────╮
+│ › Ask OpenCode anything                                  │
+╰──────────────────────────────────────────────────────────╯
+ ⠹ 8.0s · esc to stop · OpenCode · qwen3-coder-30b · Build
+[cursor 4,17]

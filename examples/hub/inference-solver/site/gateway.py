@@ -4,6 +4,7 @@ A request names a model; the router picks which of that model's replicas serves 
 """
 import http.client
 import json
+import re
 import secrets
 import time
 
@@ -11,30 +12,224 @@ import routing
 from upstream import UpstreamError, connect
 
 
-def dispatch(service, order, payload, session):
-    """Opens the first replica in `order` that answers. A replica that could not take the request
-    is skipped before anything reaches the caller. A refusal (400) is tried on the other replicas
-    too, since replicas of one name can differ in context length; it is the caller's answer only
-    when every replica refuses, and it never counts against a replica."""
-    last = None
-    for replica in order:
-        service.router.begin(replica["id"])
-        try:
-            body = {**payload, "model": replica["upstream"]}
-            if replica["url"].startswith("compute://"):
-                connection, response = service.compute.connect(replica["url"], body)
-            else:
-                connection, response = connect(replica["url"], replica["secret"], "/chat/completions", body, timeout=120)
-        except UpstreamError as error:
-            service.router.end(replica["id"], failed=error.status != 400, cool=error.status not in (400, 429))
-            if error.status == 400 or last is None or last.status != 400:
-                last = error
+# The longest reply Yougori's model server takes (its max_tokens limit).
+REPLY_TOKENS = 4096
+# The codes of a Yougori model server's refusals of a request's size (src-tauri/src/model_server.py
+# RequestLimit) and of a conversation too long for the model's context (ContextRefusal).
+REQUEST_LIMIT, CONTEXT_WINDOW = "yougori_request_limit", "yougori_context_window"
+# A Yougori model server's refusal of a request's tools names how many it takes: "Agent tools
+# require the GGUF or vLLM runner and 1 to 32 function definitions". A request within that number
+# was refused because the model's runner calls no tools.
+TOOL_COUNT = re.compile(r"\b1 to ([0-9]+) function definitions\b")
+# What the relay says of a refusal that gives no words of its own (as upstream.connect).
+REFUSED = "The model server refused this request. Check its context length and parameters."
+# What a model is told when its request goes on without tools, so that it never acts as if one ran.
+NO_TOOLS = ("No tools are available for this reply. Nothing you write runs. Answer in plain text. Never write a "
+            "tool call, and never say that a command ran or show output that no tool returned.")
+
+
+def asked(payload):
+    """The request with its instructions as the user's turn when no message is the user's: Yougori's
+    model server, like many chat templates, takes no chat without one, and Plandex names each plan
+    with a system message alone. Its system and developer messages then become user messages,
+    those in a row one message. The same request when a message is the user's."""
+    messages = payload["messages"]
+    if any(message.get("role") == "user" for message in messages):
+        return payload
+    turned = []
+    for message in messages:
+        if message.get("role") not in ("system", "developer"):
+            turned.append(message)
             continue
-        except BaseException:
-            service.router.end(replica["id"], failed=True)
-            raise
-        service.router.remember(session, replica, replica["same"])
-        return connection, response, replica
+        entry, last = {**message, "role": "user"}, turned[-1] if turned else {}
+        if last.get("role") == "user" and set(last) == set(entry) == {"role", "content"} \
+                and all(isinstance(m["content"], (str, list)) for m in (last, entry)):
+            # Many chat templates want the roles to alternate: text joins text, other content goes
+            # on part after part.
+            first, then = last["content"], entry["content"]
+            last["content"] = first + "\n\n" + then if isinstance(first, str) and isinstance(then, str) else [*parts(first), *parts(then)]
+        else:
+            turned.append(entry)
+    return {**payload, "messages": turned} if turned != messages else payload
+
+
+def parts(content):
+    """A message's content as a list of parts: text as one text part."""
+    return [{"type": "text", "text": content}] if isinstance(content, str) else content
+
+
+def capped(payload):
+    """The request with a reply limit (max_tokens, max_completion_tokens) of at most REPLY_TOKENS:
+    harnesses ask up to 32,768 of a model they do not know, which Yougori's model server refuses.
+    Its tools stay. The same request when it asks no more."""
+    over = {key: REPLY_TOKENS for key in ("max_tokens", "max_completion_tokens")
+            if type(payload.get(key)) is int and payload[key] > REPLY_TOKENS}
+    return {**payload, **over} if over else payload
+
+
+def plain(payload):
+    """The request as plain chat, for a model server that refused it as it was and may take no
+    tools: without them, so a model on a runtime that calls none still answers any harness, in
+    text; earlier tool calls and their results written into the conversation as text; the model
+    told that no tools are available and that nothing it writes runs (NO_TOOLS); and a reply
+    limit of at most 4,096 tokens. The same request when there is nothing to change."""
+    body = {key: value for key, value in payload.items() if key not in ("tools", "tool_choice", "parallel_tool_calls")}
+    dropped = len(body) < len(payload) or any(message.get("role") == "tool" or "tool_calls" in message
+                                              for message in payload["messages"])
+    names, messages = {}, []
+    for message in payload["messages"]:
+        content = message.get("content")
+        text = content if isinstance(content, str) else "\n".join(
+            part["text"] for part in content if isinstance(part, dict) and isinstance(part.get("text"), str)) if isinstance(content, list) else ""
+        if message.get("role") == "tool":
+            entry = {"role": "user", "content": "Result of " + names.get(str(message.get("tool_call_id")), "a tool") + ":\n" + text}
+        elif message.get("role") == "assistant" and isinstance(message.get("tool_calls"), list):
+            calls = []
+            for call in message["tool_calls"]:
+                function = call.get("function") if isinstance(call, dict) and isinstance(call.get("function"), dict) else {}
+                name = str(function.get("name") or "a tool")
+                names[str(call.get("id")) if isinstance(call, dict) else ""] = name
+                calls.append("Called " + name + " with " + str(function.get("arguments") or "{}"))
+            entry = {"role": "assistant", "content": "\n\n".join(part for part in (text, *calls) if part)}
+        else:
+            entry = {key: value for key, value in message.items() if key not in ("tool_calls", "tool_call_id")}
+            if entry.get("role") == "assistant" and entry.get("content") is None:
+                entry["content"] = ""
+        # Results in a row (or a result and the next question) become one message, since many
+        # chat templates want the roles to alternate.
+        last = messages[-1] if messages else {}
+        if set(entry) == set(last) == {"role", "content"} and entry["role"] == last["role"] and all(isinstance(m["content"], str) for m in (entry, last)):
+            last["content"] += "\n\n" + entry["content"]
+        else:
+            messages.append(entry)
+    if dropped:
+        # After the harness's own instructions, which may say to use tools.
+        first = messages[0] if messages else {}
+        if first.get("role") in ("system", "developer") and isinstance(first.get("content"), str):
+            first["content"] = (first["content"] + "\n\n" if first["content"] else "") + NO_TOOLS
+        elif first.get("role") in ("system", "developer") and isinstance(first.get("content"), list):
+            first["content"] = [*first["content"], {"type": "text", "text": NO_TOOLS}]
+        else:
+            messages.insert(0, {"role": "system", "content": NO_TOOLS})
+    body["messages"] = messages
+    return capped(body)
+
+
+def tool_sizes(payload):
+    """(count, bytes) of the request's tool definitions, measured as Yougori's model server measures
+    them: the length of the list as JSON."""
+    tools = payload.get("tools")
+    return (len(tools), len(json.dumps(tools))) if isinstance(tools, list) else (0, 0)
+
+
+def too_large(error, payload):
+    """Whether a refusal is of the request's size: a Yougori model server's own limit on its tools,
+    conversation, messages, body or reply length. One exception: a refusal of tools that are within
+    the number that server takes says its runner calls no tools at all."""
+    if error.code != REQUEST_LIMIT:
+        return False
+    most = TOOL_COUNT.search(str(error))
+    return not (most and tool_sizes(payload)[0] <= int(most.group(1)))
+
+
+def explained(error, payload):
+    """A size refusal of a request with tools, with what the request sent, so a person sees what to
+    cut: an agent believes it has the tools it sent, and the model would see none of them."""
+    count, size = tool_sizes(payload)
+    if not count:
+        return error
+    messages = len(payload["messages"])
+    return UpstreamError(f"{str(error).rstrip('. ')}. This request sent {count} tool definition{'s' * (count != 1)} "
+                         f"({size:,} bytes) and {messages} message{'s' * (messages != 1)}. Nothing reached the model.",
+                         error.status, error.code)
+
+
+def refusal(connection, response, secret=""):
+    """A model server's refusal (400) as an UpstreamError, its connection closed. It keeps the
+    server's own words, as a contributing computer's refusal does (compute.py): its error message
+    on one line of printable ASCII, at most 300 characters, and its code when that is a lower-case
+    name. The server's key (`secret`) never passes, should the server echo it. The relay's own words
+    (REFUSED) only when the server gave none."""
+    try:
+        raw = response.read(65536)
+    except (OSError, http.client.HTTPException):
+        raw = b""
+    finally:
+        response.close()
+        connection.close()
+    try:
+        value = json.loads(raw)
+    except ValueError:
+        value = None
+    # {"error": {"message", "code"}} as OpenAI and Yougori write it, {"error": "..."}, or the
+    # message at the top as older vLLM writes it.
+    detail = value.get("error", value) if isinstance(value, dict) else None
+    detail = {"message": detail} if isinstance(detail, str) else detail if isinstance(detail, dict) else {}
+    message = re.sub(r"[^ -~]", "", " ".join(str(detail.get("message") or "").split()))
+    message = (message.replace(secret, "[hidden]") if secret else message)[:300].strip()
+    code = str(detail.get("code", ""))
+    return UpstreamError(message or REFUSED, 400, code if re.fullmatch(r"[a-z_]{1,40}", code) else "")
+
+
+def dispatch(service, order, payload, session):
+    """Opens the first replica in `order` that answers, with a chat that has no user message sent
+    with its instructions as the user's (asked()). A replica that could not take the request is
+    skipped before anything reaches the caller. A refusal (400) is tried on the other replicas
+    too, since replicas of one name can differ in context length; it never counts against a
+    replica. When every replica refuses, the request goes again to those that refused it. First,
+    when its reply limit may be what was refused, it goes with a reply limit of at most
+    REPLY_TOKENS and its tools kept. Then, when plain chat changes it, it goes once as plain chat
+    (plain()), which tells the model that no tools are available and that nothing it writes runs.
+    Plain chat follows every refusal but two: a Yougori model server's refusal of the request's
+    size (its limit on tools, conversation, messages, reply length or body) and a refusal of a
+    conversation too long for the context. Those two are the caller's answer, in words that say
+    what was too large. Any other refusal may mean that the model's server takes no tools, but
+    need not: a refusal without a Yougori code can come from any server for any reason, and a
+    Yougori refusal of tools within the number it takes says that its runner calls none. The last
+    refusal is the caller's answer, in the server's own words (refusal())."""
+    payload = asked(payload)
+    last, refused, relaxed = None, [], False
+    while True:
+        for replica in order:
+            service.router.begin(replica["id"])
+            try:
+                body = {**payload, "model": replica["upstream"]}
+                if replica["url"].startswith("compute://"):
+                    if relaxed:
+                        # Yougori's model server drops the oldest turns of a long chat instead of refusing it.
+                        body["truncate"] = True
+                    connection, response = service.compute.connect(replica["url"], body)
+                else:
+                    connection, response = connect(replica["url"], replica["secret"], "/chat/completions", body, timeout=120,
+                                                   expect=(200, 400))
+                    if response.status == 400:
+                        raise refusal(connection, response, replica["secret"])
+            except UpstreamError as error:
+                service.router.end(replica["id"], failed=error.status != 400, cool=error.status not in (400, 429))
+                if error.status == 400:
+                    refused.append(replica)
+                if error.status == 400 or last is None or last.status != 400:
+                    last = error
+                continue
+            except BaseException:
+                service.router.end(replica["id"], failed=True)
+                raise
+            service.router.remember(session, replica, replica["same"])
+            return connection, response, replica
+        if relaxed or not refused or last.code == CONTEXT_WINDOW:
+            break
+        shorter = capped(payload)
+        # A Yougori model server names its limit; any other server's refusal may be the reply limit.
+        if shorter is not payload and (last.code != REQUEST_LIMIT or "max_tokens" in str(last)):
+            payload, order, refused = shorter, refused, []
+            continue
+        if too_large(last, payload):
+            last = explained(last, payload)
+            break
+        simpler = plain(payload)
+        if simpler == payload:
+            break
+        payload, order, refused, relaxed = simpler, refused, [], True
     raise last or UpstreamError("The model server is not currently available.", 503)
 
 
@@ -138,6 +333,13 @@ def complete(handler, key, payload):
             return handler.error(400, "No connected server of this model enforces JSON output (response_format). Serve it with vLLM or llama.cpp.")
     order = service.router.order(replicas, session)
     if not order:
+        # A model a computer is still downloading or loading answers once it has loaded: the
+        # caller learns that at once, with how far it has got, rather than after a time limit.
+        now = time.time()
+        starting = next((r for r in replicas if r["state"] == "loading" and r["checked"] > now - routing.FRESH_SECONDS), None)
+        if starting:
+            return handler.error(503, f"{model} is still {starting.get('detail') or 'starting its model server'} on the computer that serves it. "
+                                      "It answers once it has loaded; try again then.")
         return handler.error(503, "The model server is not currently available.")
     if not service.inference_slots.acquire(blocking=False):
         return handler.error(429, "This service is at capacity. Retry shortly.", retry=True)
@@ -146,7 +348,7 @@ def complete(handler, key, payload):
     sent = False
     try:
         if not service.payments.reserve(key['user_id'],model,request_id,payload):
-            return handler.error(402, 'Balance is below the temporary request reservation. Top up in Usage or lower the output token limit.')
+            return handler.error(402, service.payments.refusal(key['user_id'], model))
         service.control.presence(key['user_id'],api=True)
         with service.control.lock:
             service.control.active.add(request_id)

@@ -1,0 +1,25 @@
+---
+source: src/ui/tests.rs
+expression: narrow
+---
+
+  ▀▄ ▄▀ ▄▀▀▄ █  █ ▄▀▀▀ ▄▀▀▄ █▀▀▄ ▀█▀
+    █   █  █ █  █ █ ▀█ █  █ █▀█   █     OpenCode  v1.0.0
+    ▀    ▀▀   ▀▀   ▀▀▀  ▀▀  ▀  ▀ ▀▀▀    qwen3-coder-30b
+
+  OpenCode 1.0 · build mode
+
+
+◆  Keys
+│  enter           send (while it works: queue for after)
+│  shift+enter     new line (also alt+enter, ctrl+j)
+│  ↑ ↓             earlier prompts at the first or last line
+│  esc             stop the turn
+│  ctrl+c          clear the box or stop; twice to quit
+│  ctrl+p          commands: model, mode, sessions, keys
+│  tab             next mode (when the box is empty)
+│  /               the engine's commands
+│  ↑↓ more (1 of 16)
+└  esc close
+ OpenCode · qwen3-coder-30b · 10% context · Build
+[no cursor]

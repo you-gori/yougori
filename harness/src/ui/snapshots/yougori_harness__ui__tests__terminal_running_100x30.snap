@@ -1,0 +1,35 @@
+---
+source: src/ui/tests.rs
+expression: wide
+---
+
+  ▀▄ ▄▀ ▄▀▀▄ █  █ ▄▀▀▀ ▄▀▀▄ █▀▀▄ ▀█▀
+    █   █  █ █  █ █ ▀█ █  █ █▀█   █     OpenCode  v1.0.0
+    ▀    ▀▀   ▀▀   ▀▀▀  ▀▀  ▀  ▀ ▀▀▀    qwen3-coder-30b
+
+  OpenCode 1.0 · build mode
+
+› Run the tests
+
+  ⠸ Run    cargo test                                                                   running 3.2s
+      … 25 earlier lines
+      test case_26 ... ok
+      test case_27 ... ok
+      test case_28 ... ok
+      test case_29 ... ok
+      test case_30 ... ok
+
+
+
+
+
+
+
+
+
+
+╭──────────────────────────────────────────────────────────────────────────────────────────────────╮
+│ › Ask OpenCode anything                                                                          │
+╰──────────────────────────────────────────────────────────────────────────────────────────────────╯
+ ⠸ 3.3s · esc to stop · OpenCode · qwen3-coder-30b · 10% context · Build
+[cursor 4,27]

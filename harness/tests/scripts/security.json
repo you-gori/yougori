@@ -1,0 +1,14 @@
+{
+  "harness": "strix",
+  "name": "Strix",
+  "category": "security",
+  "protocol": "native",
+  "profile": "yougori",
+  "cwd": ".",
+  "model": "unsloth/gemma-4-26B-A4B-it-GGUF",
+  "models": ["unsloth/gemma-4-26B-A4B-it-GGUF", "qwen3-coder-30b"],
+  "model_switch": "live",
+  "state_dir": "target/yougori-harness-tour",
+  "answers": { "target": "https://shop.example.test", "depth": "safe" },
+  "reach": { "mode": "targets", "targets": ["shop.example.test:443"] }
+}

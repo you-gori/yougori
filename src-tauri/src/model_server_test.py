@@ -520,6 +520,81 @@ class AgentToolCallingTests(unittest.TestCase):
             with self.assertRaises(ValueError):
                 model.validate_chat({**history, "tools": None})
 
+    def test_a_vllm_reply_sent_back_as_it_came_is_accepted(self):
+        # vLLM's plain text answer carries "tool_calls": [] and null refusal and reasoning; clients
+        # send it back unchanged, with or without a tool parser on the runner.
+        reply = {"role": "assistant", "content": "hi", "tool_calls": [], "function_call": None, "refusal": None, "reasoning_content": None}
+        for parser in ("", "hermes"):
+            for returned in (reply, {**reply, "tool_calls": None}):
+                with self.subTest(parser=parser, returned=returned), patch.object(model, "FORMAT", "vllm"), patch.object(model, "TOOL_PARSER", parser):
+                    messages = model.validate_chat({"messages": [{"role": "user", "content": "Check"}, dict(returned), {"role": "user", "content": "And now?"}]})[0]
+                    self.assertEqual(messages[1], {"role": "assistant", "content": "hi"})
+        # Only an assistant's empty list counts as no calls; anything else is checked as before.
+        with patch.object(model, "FORMAT", "vllm"), patch.object(model, "TOOL_PARSER", "hermes"):
+            for returned in ({"role": "assistant", "content": None, "tool_calls": []}, {"role": "user", "content": "x", "tool_calls": []},
+                             {"role": "assistant", "content": "x", "tool_calls": {}}, {"role": "assistant", "content": "x", "tool_calls": False}):
+                with self.subTest(returned=returned), self.assertRaises(ValueError):
+                    model.validate_chat({"messages": [{"role": "user", "content": "Check"}, returned, {"role": "user", "content": "And now?"}]})
+
+
+class DefaultReplyTests(unittest.TestCase):
+    """The agent API's default reply (4096 tokens) on a llama.cpp context of 4096 tokens."""
+
+    @classmethod
+    def setUpClass(cls):
+        cls.server = ThreadingHTTPServer(("127.0.0.1", 0), Provider)
+        cls.server.seen, cls.server.complete = [], True
+        cls.thread = threading.Thread(target=cls.server.serve_forever, daemon=True)
+        cls.thread.start()
+
+    @classmethod
+    def tearDownClass(cls):
+        cls.server.shutdown()
+        cls.server.server_close()
+        cls.thread.join(2)
+
+    def test_a_request_without_max_tokens_gets_the_room_its_prompt_leaves(self):
+        with patch.dict(model.LLAMA, port=self.server.server_address[1], context=4096), patch.dict(model.STATE, status="ready"), \
+             patch.dict(os.environ, {"YOUGORI_MODEL_AGENT_API": "1"}):
+            status, _ = model.generate({"messages": [{"role": "user", "content": "Hello"}]}, Output(), {})
+            self.assertEqual(status, 200)
+            body = [body for path, body in self.server.seen if path == "/v1/chat/completions"][-1]
+            # The fake tokenizer counts "Hello" as two tokens.
+            self.assertEqual(body["max_tokens"], 4096 - 2)
+            # An agent's own max_tokens that the context cannot also hold gets what the context leaves.
+            status, _ = model.generate({"messages": [{"role": "user", "content": "Hello"}], "max_tokens": 4096}, Output(), {})
+            body = [body for path, body in self.server.seen if path == "/v1/chat/completions"][-1]
+            self.assertEqual((status, body["max_tokens"]), (200, 4096 - 2))
+        # Without the agent flag a max_tokens the caller set is still held to the context.
+        with patch.dict(model.LLAMA, port=self.server.server_address[1], context=4096), patch.dict(model.STATE, status="ready"), \
+             patch.dict(os.environ, {"YOUGORI_MODEL_AGENT_API": ""}):
+            with self.assertRaisesRegex(ValueError, "max_tokens must be below"):
+                model.generate({"messages": [{"role": "user", "content": "Hello"}], "max_tokens": 4096}, Output(), {})
+
+
+class LoadOrderTests(unittest.TestCase):
+    """A load asks for the GPU only once its weights are on disk: the scheduler loads one model at a
+    time, so a download of many minutes holding that turn kept every other model from loading."""
+
+    def test_every_backend_downloads_before_it_asks_for_the_gpu(self):
+        here = os.path.dirname(os.path.abspath(__file__))
+
+        def read(*path):
+            with open(os.path.join(here, *path), encoding="utf-8") as file:
+                return file.read()
+        backends, server = read("model_runner", "engine_backends.py"), read("model_server.py")
+
+        def body(source, name):
+            start = source.index("def " + name + "(")
+            end = source.find("\ndef ", start + 1)
+            return source[start:end if end > 0 else len(source)]
+
+        for source, name, download in ((backends, "load_vllm", "root = verified_snapshot(revision)"),
+                                       (backends, "load_gguf", "model = verified_gguf()"),
+                                       (server, "load_transformers", "verified_snapshot(revision)")):
+            text = body(source, name)
+            self.assertLess(text.index(download), text.index("gpu_before_load()"), name)
+
 
 if __name__ == "__main__":
     unittest.main()

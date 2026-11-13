@@ -47,9 +47,30 @@ type vmClient struct {
 	root       *os.Root
 }
 
+// yougoriVMHere says whether this is a Yougori VM that runs PentAGI: its own image, or the shared
+// Yougori base with PentAGI's pack delivered, where the launcher names the harness in SOLVER_HARNESS.
+func yougoriVMHere(marker string, getenv func(string) string) bool {
+	name := strings.TrimSpace(marker)
+	return getenv("SOLVER_VM_RUNTIME") == "1" && (name == "pentagi" || (name == "yougori" && getenv("SOLVER_HARNESS") == "pentagi"))
+}
+
+// vmCommandEnv is the environment of a tool command: a fixed base, and the answers the person
+// gave as secrets (YOUGORI_SECRET_*, such as the test login's password), which the brief tells
+// PentAGI to use from the environment so their values never reach the model. Nothing else of
+// the server's environment, its keys included, reaches a command.
+func vmCommandEnv(environ []string) []string {
+	env := []string{"PATH=/opt/solver/tool/bin:/usr/local/bin:/usr/bin:/bin", "HOME=/home/node", "LANG=C.UTF-8", "TERM=xterm-256color"}
+	for _, entry := range environ {
+		if strings.HasPrefix(entry, "YOUGORI_SECRET_") {
+			env = append(env, entry)
+		}
+	}
+	return env
+}
+
 func newYougoriVMClient(db database.Querier) (DockerClient, error) {
 	marker, err := os.ReadFile("/opt/solver/harness-name")
-	if err != nil || strings.TrimSpace(string(marker)) != "pentagi" || os.Getenv("SOLVER_VM_RUNTIME") != "1" {
+	if err != nil || !yougoriVMHere(string(marker), os.Getenv) {
 		return nil, fmt.Errorf("PentAGI's process adapter must run inside its Yougori VM image")
 	}
 	root, err := os.OpenRoot("/work")
@@ -178,7 +199,7 @@ func (v *vmClient) ContainerExecAttach(ctx context.Context, id string, _ client.
 	commandContext, cancel := context.WithTimeout(ctx, 20*time.Minute)
 	command := exec.CommandContext(commandContext, e.options.Cmd[0], e.options.Cmd[1:]...)
 	command.Dir = directory
-	command.Env = []string{"PATH=/opt/solver/tool/bin:/usr/local/bin:/usr/bin:/bin", "HOME=/home/node", "LANG=C.UTF-8", "TERM=xterm-256color"}
+	command.Env = vmCommandEnv(os.Environ())
 	command.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
 	command.Cancel = func() error {
 		if command.Process != nil {

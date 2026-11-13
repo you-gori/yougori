@@ -16,6 +16,10 @@ use serde::{Deserialize, Serialize};
 mod host_budget;
 mod registry;
 
+/// The host memory an image's layer buffers hold beside its VM while it is attached or imported
+/// ([`host_budget::HostBuffers`]); a launch that attaches an image waits for this much more room.
+pub(super) const IMAGE_HOST_BUFFER_BYTES: u64 = 1 << 30;
+
 const IMAGE_FORMAT: &str = "yougori-vm-image/v2";
 const IMPORT_TIMEOUT: Duration = Duration::from_secs(300);
 const COMPRESSED_LIMIT: u64 = 256 << 20;
@@ -261,6 +265,7 @@ impl Production {
             gpu: false,
             gpu_memory: Vec::new(),
             internet: false,
+            targets: None,
             owner_session: false,
             tenant: TenantId::new(TENANT).map_err(|e| e.to_string())?,
             resources: VmResources {

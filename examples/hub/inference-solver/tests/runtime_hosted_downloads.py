@@ -11,6 +11,7 @@ from pathlib import Path
 import shutil
 import subprocess
 import sys
+import urllib.error
 from urllib.parse import urlsplit
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / 'site/harnesses'))
@@ -31,12 +32,23 @@ def main():
     checks = []
     def record(message): checks.append(message); print('PASS ' + message, flush=True)
     with client.open(server + '/api/harnesses') as response: catalog = json.load(response)['harnesses']
+    # `setup`: the harness's own image, which launchers that start one download (older ones
+    # included); `held`: it starts inside the Yougori harness, whose images list its base and pack.
     available = [item['id'] for item in catalog if item['setup']['available']]
-    assert available, 'No harness packages are advertised'
-    for name in available:
-        with client.open(server + '/api/harness-image/' + name) as response: spec = json.load(response)
+    held = [item['id'] for item in catalog if item.get('held', {}).get('available')]
+    assert available or held, 'No harness packages are advertised'
+    for name in available + (['yougori'] if held else []):
+        try:
+            with client.open(server + '/api/harness-image/' + name) as response: spec = json.load(response)
+        except urllib.error.HTTPError as error:
+            raise AssertionError(name + ': advertised, but its image is not served (' + str(error) + ')') from None
         base = artifact_base(server, spec)
-        for kind, value in [('image', spec), ('tool', spec.get('tool'))]:
+        if name == 'yougori':
+            files = [('image', value) for value in spec['bases'].values()] + [('tool', value) for value in spec['packs'].values() if 'sha256' in value]
+            assert set(held) <= set(spec['packs']), 'The Yougori harness lists no pack for ' + str(set(held) - set(spec['packs']))
+        else:
+            files = [('image', spec), ('tool', spec.get('tool'))]
+        for kind, value in files:
             if not value: continue
             path = base + '/' + name + '/' + value['sha256'] + ('/tool' if kind == 'tool' else '')
             total, digest = 0, hashlib.sha256()

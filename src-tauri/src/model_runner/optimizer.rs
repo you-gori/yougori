@@ -111,6 +111,27 @@ pub(super) fn environment(environment: &mut Value, protected: &mut Value) -> Res
 }
 
 pub(super) fn refresh_options(options: &mut Options) -> Result<(), String> {
+    carry_sources(options);
+    // A GGUF model's reservation follows the context window this start allocates.
+    capacity::reprice_llama_cpp(&mut options.environment, true);
+    if options.environment.get("YOUGORI_MODEL_CPU").is_some_and(|v|v == "1") {
+        options.environment.insert("YOUGORI_GPU_OPTIMIZER".into(),"0".into());
+        return Ok(());
+    }
+    if options.environment.get("YOUGORI_MODEL_FORMAT").is_some_and(|v| v == "source") { return Ok(()); }
+    options.environment.entry("YOUGORI_GPU_OPTIMIZER".into()).or_insert("1".into());
+    if !options.secret_environment.contains_key("YOUGORI_GPU_CONTROL_TOKEN") {
+        let reference = format!("gpu-control-{}", uuid::Uuid::new_v4().simple());
+        crate::projects::secrets::store(&reference, &uuid::Uuid::new_v4().simple().to_string())?;
+        options.secret_environment.insert("YOUGORI_GPU_CONTROL_TOKEN".into(), reference);
+    }
+    Ok(())
+}
+
+/// The sources a runner of this model's format and launch reads, put into its options: the model
+/// server, the engine backends, the megakernel host, the media backends and the GPU optimizer, each
+/// only where the runner reads it. None of them is a secret, so this stores nothing in the vault.
+pub(super) fn carry_sources(options: &mut Options) {
     options.environment.insert("YOUGORI_MODEL_SERVER_SOURCE".into(),super::server_payload());
     // The engine backends travel with the server that checks them, for GGUF and vLLM runners only.
     if super::loads_backends(options.environment.get("YOUGORI_MODEL_FORMAT").map(String::as_str)) {
@@ -119,7 +140,7 @@ pub(super) fn refresh_options(options: &mut Options) -> Result<(), String> {
         options.environment.remove("YOUGORI_BACKENDS_SOURCE");
     }
     // The megakernel host travels with the backends that can start it, for vLLM runners only.
-    if super::carries_megakernel(options.environment.get("YOUGORI_MODEL_FORMAT").map(String::as_str)) {
+    if super::carries_megakernel(options.environment.get("YOUGORI_MODEL_FORMAT").map(String::as_str), options.environment.get("YOUGORI_MODEL_LAUNCH").map(String::as_str)) {
         options.environment.insert("YOUGORI_MEGAKERNEL_SOURCE".into(), super::megakernel_source());
     } else {
         options.environment.remove("YOUGORI_MEGAKERNEL_SOURCE");
@@ -131,28 +152,16 @@ pub(super) fn refresh_options(options: &mut Options) -> Result<(), String> {
         options.environment.remove("YOUGORI_MEDIA_SOURCE");
     }
     options.environment.insert("YOUGORI_GPU_SOURCE".into(),source());
-    if options.environment.get("YOUGORI_MODEL_CPU").is_some_and(|v|v == "1") {
-        options.environment.insert("YOUGORI_GPU_OPTIMIZER".into(),"0".into());
-        return Ok(());
-    }
-    if options.environment.get("YOUGORI_MODEL_FORMAT").is_some_and(|v| v == "source") { return Ok(()); }
-    options.environment.insert("YOUGORI_GPU_SOURCE".into(), source());
-    options.environment.entry("YOUGORI_GPU_OPTIMIZER".into()).or_insert("1".into());
-    if !options.secret_environment.contains_key("YOUGORI_GPU_CONTROL_TOKEN") {
-        let reference = format!("gpu-control-{}", uuid::Uuid::new_v4().simple());
-        crate::projects::secrets::store(&reference, &uuid::Uuid::new_v4().simple().to_string())?;
-        options.secret_environment.insert("YOUGORI_GPU_CONTROL_TOKEN".into(), reference);
-    }
-    Ok(())
 }
 
 #[tauri::command]
-pub async fn model_optimizer(environment_id: String, enabled: Option<bool>, pinned: Option<bool>, idle_timeout_seconds: Option<u64>, parallel: Option<u64>, launch: Option<String>, runner: Option<String>, keep_outputs_hours: Option<u64>, app: AppHandle) -> Result<Value, String> {
+pub async fn model_optimizer(environment_id: String, enabled: Option<bool>, pinned: Option<bool>, idle_timeout_seconds: Option<u64>, parallel: Option<u64>, context: Option<u64>, launch: Option<String>, runner: Option<String>, keep_outputs_hours: Option<u64>, app: AppHandle) -> Result<Value, String> {
+    let live = enabled.is_some() || pinned.is_some() || idle_timeout_seconds.is_some();
+    if let Some(refusal) = alone_refusal(live, parallel.is_some() || context.is_some(), launch.is_some() || runner.is_some(), keep_outputs_hours.is_some()) {
+        return Err(refusal.into());
+    }
     if let Some(hours) = keep_outputs_hours {
         // A media model's output retention: saved for its next start and applied now when it runs.
-        if enabled.is_some() || pinned.is_some() || idle_timeout_seconds.is_some() || parallel.is_some() || launch.is_some() || runner.is_some() {
-            return Err("Change the output retention on its own, then the other settings.".into());
-        }
         return save_keep_hours(&app, &environment_id, hours).await;
     }
     if (enabled.is_some() || pinned.is_some() || idle_timeout_seconds.is_some() || parallel.is_some()) && model_format(&app, &environment_id)?.as_deref() == Some("media") {
@@ -161,9 +170,6 @@ pub async fn model_optimizer(environment_id: String, enabled: Option<bool>, pinn
     if launch.is_some() || runner.is_some() {
         // Saved on its own and applied at the next start; nothing is sent to the runner. A
         // runner given alone means the megakernel launch with it.
-        if enabled.is_some() || pinned.is_some() || idle_timeout_seconds.is_some() || parallel.is_some() {
-            return Err("Change the launch mode on its own, then the other settings.".into());
-        }
         let mode = launch.unwrap_or_else(|| "megakernel".into());
         let _admission = tokio::time::timeout(control::TIMEOUT, ADMISSION.lock()).await
             .map_err(|_| "GPU settings are busy. No changes were sent; retry after the current operation finishes.")?;
@@ -172,7 +178,7 @@ pub async fn model_optimizer(environment_id: String, enabled: Option<bool>, pinn
         if let Some(reference) = saved { result["runner"] = json!(reference); }
         return Ok(result);
     }
-    let _admission = if enabled.is_some() || pinned.is_some() || idle_timeout_seconds.is_some() || parallel.is_some() {
+    let _admission = if enabled.is_some() || pinned.is_some() || idle_timeout_seconds.is_some() || parallel.is_some() || context.is_some() {
         Some(tokio::time::timeout(control::TIMEOUT, ADMISSION.lock()).await
             .map_err(|_| "GPU settings are busy. No changes were sent; retry after the current operation finishes.")?)
     } else { None };
@@ -182,11 +188,14 @@ pub async fn model_optimizer(environment_id: String, enabled: Option<bool>, pinn
     }
     if let Some(slots) = parallel {
         check_parallel(&app, &environment_id, slots)?;
-        // Alone it is saved now; with other settings, with them once the runner acknowledged.
-        if enabled.is_none() && pinned.is_none() && idle_timeout_seconds.is_none() {
-            save_parallel(&app, &environment_id, slots)?;
-            return Ok(json!({"parallel": slots, "restartRequired": true}));
-        }
+    }
+    if let Some(tokens) = context {
+        check_context(&app, &environment_id, tokens).await?;
+    }
+    // Start settings alone are saved now; with other settings, with them once the runner acknowledged.
+    if (parallel.is_some() || context.is_some()) && enabled.is_none() && pinned.is_none() && idle_timeout_seconds.is_none() {
+        save_start_settings(&app, &environment_id, parallel, context)?;
+        return Ok(start_answer(json!({}), parallel, context));
     }
     let health = super::model_status(environment_id.clone(), app.clone()).await?;
     if enabled.is_none() && pinned.is_none() && idle_timeout_seconds.is_none() { return Ok(health["optimizer"].clone()); }
@@ -229,19 +238,48 @@ pub async fn model_optimizer(environment_id: String, enabled: Option<bool>, pinn
     options.environment.insert("YOUGORI_GPU_OPTIMIZER".into(), if on {"1"} else {"0"}.into());
     options.environment.insert("YOUGORI_GPU_PINNED".into(), if pin {"1"} else {"0"}.into());
     options.environment.insert("YOUGORI_GPU_IDLE_SECONDS".into(), timeout.to_string());
-    if let Some(slots) = parallel {
-        options.environment.insert("YOUGORI_MODEL_PARALLEL".into(), slots.to_string());
-    }
+    start_settings(&mut options, parallel, context);
     // The runner read these when it started; a restart carries the new ones into its container.
     super::mark_for_start(&mut options);
     runtime.save_workload_options(id, &options)?;
     WAKE.notify();
-    let mut result = answer["optimizer"].clone();
-    if let (Some(slots), Some(fields)) = (parallel, result.as_object_mut()) {
-        fields.insert("parallel".into(), json!(slots));
+    Ok(start_answer(answer["optimizer"].clone(), parallel, context))
+}
+
+/// Settings changed on their own, refused before anything is read or saved: a media model's
+/// output retention, then the launch mode with its runner. `live` names a setting the runner
+/// applies now (on, off, pin, idle), `start` one it reads at its next start (parallel requests,
+/// the context window), which go together.
+fn alone_refusal(live: bool, start: bool, launch: bool, keep_outputs: bool) -> Option<&'static str> {
+    if keep_outputs && (live || start || launch) {
+        return Some("Change the output retention on its own, then the other settings.");
+    }
+    if launch && (live || start) {
+        return Some("Change the launch mode on its own, then the other settings.");
+    }
+    None
+}
+
+/// The settings a runner reads when it starts, put into its options: parallel requests and the
+/// context window ([`MODEL_CONTEXT`]).
+fn start_settings(options: &mut Options, parallel: Option<u64>, context: Option<u64>) {
+    if let Some(slots) = parallel {
+        options.environment.insert("YOUGORI_MODEL_PARALLEL".into(), slots.to_string());
+    }
+    if let Some(tokens) = context {
+        options.environment.insert(MODEL_CONTEXT.into(), tokens.to_string());
+        capacity::reprice_llama_cpp(&mut options.environment, false);
+    }
+}
+
+/// An answer with the start settings saved beside it, which apply at the next start.
+fn start_answer(mut result: Value, parallel: Option<u64>, context: Option<u64>) -> Value {
+    if let Some(fields) = result.as_object_mut().filter(|_| parallel.is_some() || context.is_some()) {
+        if let Some(slots) = parallel { fields.insert("parallel".into(), json!(slots)); }
+        if let Some(tokens) = context { fields.insert("context".into(), json!(tokens)); }
         fields.insert("restartRequired".into(), json!(true));
     }
-    Ok(result)
+    result
 }
 
 /// The format of a model environment's runner, as its workload says (`YOUGORI_MODEL_FORMAT`).
@@ -275,13 +313,66 @@ async fn save_keep_hours(app: &AppHandle, environment_id: &str, hours: u64) -> R
 }
 
 /// How many requests a GGUF (llama.cpp slots sharing one KV pool) or vLLM model generates
-/// together (G02): the runner reads `YOUGORI_MODEL_PARALLEL` when it starts, so a saved change
-/// takes effect at the next start. Other runners generate one request at a time.
-fn save_parallel(app: &AppHandle, environment_id: &str, slots: u64) -> Result<(), String> {
-    let (id, mut options) = check_parallel(app, environment_id, slots)?;
-    options.environment.insert("YOUGORI_MODEL_PARALLEL".into(), slots.to_string());
+/// together (G02, `YOUGORI_MODEL_PARALLEL`) and a GGUF model's context window
+/// ([`MODEL_CONTEXT`]): the runner reads them when it starts, so a saved change takes effect at
+/// the next start. Other runners generate one request at a time and size their own context.
+fn save_start_settings(app: &AppHandle, environment_id: &str, parallel: Option<u64>, context: Option<u64>) -> Result<(), String> {
+    let (_, id, mut options) = model_workload(app, environment_id)?;
+    start_settings(&mut options, parallel, context);
     super::mark_for_start(&mut options);
     app.state::<RuntimeManager>().save_workload_options(&id, &options)
+}
+
+/// A model environment's kind, the id its workload is saved under and its options as they are.
+fn model_workload(app: &AppHandle, environment_id: &str) -> Result<(EnvironmentKind, String, Options), String> {
+    let state = app.state::<PlatformStore>().snapshot()?;
+    let env = state.environments.iter().find(|e| e.id == environment_id).ok_or("Model not found")?;
+    let id = env.runtime_id.clone().unwrap_or_else(|| environment_id.to_owned());
+    let options = app.state::<RuntimeManager>().workload_options(&id)?;
+    Ok((env.kind.clone(), id, options))
+}
+
+/// The context window, in tokens, a GGUF runner's llama.cpp allocates (`-c`): engine_backends.py
+/// reads it when the runner starts (32,768 without it) and never goes past the model's own
+/// longest context (`context_length` in its GGUF header); `model status` reports the window that
+/// serves as `context`. Agents' first requests run near 30,000 tokens, past the default.
+const MODEL_CONTEXT: &str = "YOUGORI_MODEL_CONTEXT";
+
+/// Refuses a context window this model cannot take, before anything is saved: out of range, a
+/// runner that sizes its own, or, under the llama.cpp admission profile, a window whose
+/// reservation this GPU cannot hold.
+async fn check_context(app: &AppHandle, environment_id: &str, tokens: u64) -> Result<(), String> {
+    let (kind, _, options) = model_workload(app, environment_id)?;
+    if let Some(refusal) = context_refusal(&kind, &options.environment, tokens) {
+        return Err(refusal.into());
+    }
+    match (capacity::llama_cpp_demand_at(&options.environment, tokens)?, capacity::local_gpu_total().await) {
+        (Some(bytes), Some(total)) => capacity::llama_cpp_fits(bytes, total),
+        _ => Ok(()),
+    }
+}
+
+/// Why a model takes no context window of `tokens` from this engine, if it takes none: out of
+/// range, a cloud server's runner and the native host service keep their own settings, and only
+/// llama.cpp allocates the window the owner chooses. vLLM fits its context to the GPU at start
+/// (its audited launch caps it at 32,768, `model_memory::profiles::audit`); the Transformers
+/// runner serves what its checkpoint and GPU grant cover.
+fn context_refusal(kind: &EnvironmentKind, environment: &std::collections::BTreeMap<String, String>, tokens: u64) -> Option<&'static str> {
+    if !(4096..=262_144).contains(&tokens) || tokens % 1024 != 0 {
+        return Some("The context window must be 4,096–262,144 tokens in steps of 1,024, for example 65536 or 131072.");
+    }
+    if *kind == EnvironmentKind::Cloud {
+        return Some("A model on a cloud server serves with that server's own settings; set its context window where it runs.");
+    }
+    if environment.contains_key("YOUGORI_NATIVE_BACKEND") {
+        return Some("The native host model service keeps its own 32,768-token context window; the setting applies to GGUF runners in containers.");
+    }
+    match environment.get("YOUGORI_MODEL_FORMAT").map(String::as_str) {
+        Some("gguf") => None,
+        Some("media") => Some("A media model has no context window; its setting is --keep-outputs HOURS."),
+        Some("vllm") => Some("A vLLM model fits its context window to the GPU when it starts, at most 32,768 tokens; the context window setting applies to GGUF models."),
+        _ => Some("Only GGUF models take a context window setting; this model's runner sizes its own (model status shows it as context)."),
+    }
 }
 
 /// How a vLLM model runs (`YOUGORI_MODEL_LAUNCH`, read by engine_backends.py when the runner
@@ -308,7 +399,7 @@ fn save_launch(app: &AppHandle, environment_id: &str, mode: &str, runner: Option
     let id = env.runtime_id.clone().unwrap_or_else(|| environment_id.to_owned());
     let runtime = app.state::<RuntimeManager>();
     let mut options = runtime.workload_options(&id)?;
-    if let Some(refusal) = launch_refusal(&env.kind, &options.environment) {
+    if let Some(refusal) = launch_refusal(&env.kind, &options.environment, mode) {
         return Err(refusal.into());
     }
     let reference = match runner.map(str::trim).filter(|reference| !reference.is_empty()) {
@@ -375,12 +466,18 @@ fn apply_runner(options: &mut Options, reference: &RunnerReference) -> String {
     saved
 }
 
-/// Why a model takes no launch mode from this engine, if it takes none: only vLLM runners have
-/// one, in this engine's containers and on Neocloud pods (whose next start carries it).
-fn launch_refusal(kind: &EnvironmentKind, environment: &std::collections::BTreeMap<String, String>) -> Option<&'static str> {
+/// Why a model takes no launch mode from this engine, or not `mode`, if it does not: only vLLM
+/// runners have one, in this engine's containers and on Neocloud pods (whose next start carries it).
+/// A model run from a folder takes no megakernel launch: its start would carry the registry
+/// verifier and the megakernel host beside the model server and backends, more than the CUDA
+/// runtime's agent reads in one request (128 KiB), so the start would keep the server it had.
+pub(super) fn launch_refusal(kind: &EnvironmentKind, environment: &std::collections::BTreeMap<String, String>, mode: &str) -> Option<&'static str> {
     let _ = kind;
     if !environment.get("YOUGORI_MODEL_FORMAT").is_some_and(|f| f == "vllm") {
         return Some("Only vLLM models have a launch mode; this model's runner runs one way.");
+    }
+    if mode == "megakernel" && environment.contains_key("YOUGORI_MODEL_PATH") {
+        return Some("A model run from a folder on this computer cannot use the megakernel launch yet: its runner would need more than the CUDA runtime takes at one start. Run the same model from Hugging Face to use a megakernel.");
     }
     None
 }
@@ -564,6 +661,76 @@ impl Retention {
         let mut ordered = candidates.into_iter().enumerate().collect::<Vec<_>>();
         ordered.sort_by(|(a_index, a), (b_index, b)| density(a).total_cmp(&density(b)).then(a_index.cmp(b_index)));
         ordered.into_iter().map(|(_, id)| id).collect()
+    }
+}
+
+/// A vLLM runner parked by sleep whose engine an unload ends now: the engine still holds part of
+/// the GPU although the runner is not resident. An idle one, or one whose own requests wait when
+/// its runner ends a parked engine even then (`control::ends_parked_while_waiting`); an older
+/// runner refuses that unload, so its engine stays.
+fn parked_engine(health: &Value) -> bool {
+    let o = &health["optimizer"];
+    health["parked"] == "sleep" && o["resident"] == false && o["loading"] == false && o["pinned"] == false
+        && o["releaseUncertain"] == false && o["active"].as_u64().unwrap_or(0) == 0
+        && (o["pending"].as_u64().unwrap_or(0) == 0 || control::ends_parked_while_waiting(health))
+}
+
+/// A vLLM runner parked by sleep and idle: its engine still holds part of the GPU although it is
+/// not resident, and unloading it again ends that engine.
+fn sleeper(health: &Value) -> bool {
+    parked_engine(health) && health["optimizer"]["pending"].as_u64().unwrap_or(0) == 0
+}
+
+/// The vLLM runners parked by sleep whose engines end for `target`'s admission. None for a model
+/// only a preparation started (it switches no other model out), and none before the target was
+/// refused for want of GPU memory: a model that fits beside their leftovers leaves them parked, as
+/// a wake takes seconds and a cold start much longer. Then every parked engine but the target's,
+/// also of a model waiting itself: it starts its engine again when its turn comes, where its
+/// leftover would keep the first in line refused and both models waiting.
+fn parked_in_the_way(target: &str, rows: &[(String, Value)], speculative: bool, refused_for_room: bool) -> Vec<(String, Value)> {
+    if speculative || !refused_for_room {
+        return Vec::new();
+    }
+    rows.iter().filter(|(other, health)| other != target && parked_engine(health)).cloned().collect()
+}
+
+/// A refusal without its numbers, for the scheduler to tell a new reason from the same one: the
+/// byte counts in a capacity refusal follow the host probe and move on almost every pass.
+fn refusal_kind(reason: &str) -> String {
+    reason.chars().filter(|c| !c.is_ascii_digit()).collect()
+}
+
+/// What the engine's host probe read around a vLLM runner's park by sleep: the GPU memory in use
+/// before and after it, when, and the runner instance that parked.
+#[derive(Clone, Debug, PartialEq)]
+struct Park {
+    before: u64,
+    after: u64,
+    at: std::time::Instant,
+    instance: Option<String>,
+}
+
+impl Park {
+    /// The park the answer `reply` to a watched unload reports, measured `before` and `after`.
+    fn of(reply: &Value, before: u64, after: u64) -> Self {
+        Self { before, after, at: std::time::Instant::now(), instance: reply["optimizer"]["instanceId"].as_str().map(str::to_owned) }
+    }
+
+    /// Whether this park may still describe the engine of the runner `health` answers for: the same
+    /// runner instance (a new one ended the engine with the old process), still parked, loading (its
+    /// wake or a cold start) or bound again holding its model (the wake is recorded then). A runner
+    /// holding a model it is not bound with, or neither parked nor loading, has no such engine now.
+    fn describes(&self, health: &Value, bound: bool) -> bool {
+        let o = &health["optimizer"];
+        self.instance.as_deref() == o["instanceId"].as_str()
+            && (health["parked"] == "sleep" || o["loading"] == true || (o["resident"] == true && bound))
+    }
+
+    /// What the admission of the runner `health` answers for credits from this park, while that
+    /// runner is the one that parked and is parked still ([`capacity::Parked`]).
+    fn credit(&self, health: &Value) -> Option<capacity::Parked> {
+        (health["parked"] == "sleep" && self.instance.as_deref() == health["optimizer"]["instanceId"].as_str())
+            .then_some(capacity::Parked { before: self.before, after: self.after })
     }
 }
 
@@ -753,9 +920,10 @@ pub(crate) fn start_until(app: &AppHandle, shutdown: tokio_util::sync::Cancellat
         // The local vLLM runtimes this scheduler bound to the engine's host evidence (G03).
         let mut binder = runtime_binding::Binder::default();
         // vLLM runners that parked by sleep when asked to unload, with the GPU memory in use the
-        // host probe read before and after and when: their wake is matched once they are bound
-        // again (CORE-01 sleep-mode weight discarding, G01/G02).
-        let sleeping = std::sync::Mutex::new(std::collections::BTreeMap::<String, (u64, u64, std::time::Instant)>::new());
+        // host probe read before and after, when, and which runner instance: their wake is matched
+        // once they are bound again (CORE-01 sleep-mode weight discarding, G01/G02). A park whose
+        // engine ended, or whose runner was replaced, is dropped (`Park::describes`).
+        let sleeping = std::sync::Mutex::new(std::collections::BTreeMap::<String, Park>::new());
         let scheduling = async {
         // This scope owns the subscription lifetime, even on early return/error.
         let _stop = subscriptions.clone().drop_guard();
@@ -763,7 +931,8 @@ pub(crate) fn start_until(app: &AppHandle, shutdown: tokio_util::sync::Cancellat
         let mut resident = std::collections::HashSet::<String>::new();
         let mut fenced = std::collections::HashSet::<String>::new();
         let mut revisions = std::collections::HashMap::new();
-        // The last reason each model's co-admission waited for, so the log says it once.
+        // The kind of the last refusal each waiting model's admission met (`refusal_kind`), so the
+        // log says it once, and a model refused for want of GPU memory has parked engines ended.
         let mut last_wait = std::collections::HashMap::<String, String>::new();
         let mut last_started = None;
         // The served helper directories a restarted runner left (its share server held them
@@ -883,11 +1052,17 @@ pub(crate) fn start_until(app: &AppHandle, shutdown: tokio_util::sync::Cancellat
             // the engine and reloaded the weights, with no cold start) completed a sleep cycle.
             let parked = sleeping.lock().unwrap_or_else(std::sync::PoisonError::into_inner).keys().cloned().collect::<Vec<_>>();
             for id in parked {
-                if !models.iter().any(|model| model.id == id) {
+                // A park outlives neither its model nor its engine: an ended engine's numbers would be
+                // credited to a later park nobody measured, which would also escape the idle unload.
+                let health = seen.iter().find(|row| row.id == id).and_then(|row| row.health.as_ref());
+                let bound = binder.bindings().contains_key(&id);
+                let kept = models.iter().any(|model| model.id == id) && sleeping.lock().unwrap_or_else(std::sync::PoisonError::into_inner)
+                    .get(&id).is_some_and(|park| health.is_none_or(|health| park.describes(health, bound)));
+                if !kept {
                     sleeping.lock().unwrap_or_else(std::sync::PoisonError::into_inner).remove(&id);
                     continue;
                 }
-                let (Some(binding), Some(health)) = (binder.bindings().get(&id), seen.iter().find(|row| row.id == id).and_then(|row| row.health.as_ref())) else { continue };
+                let (Some(binding), Some(health)) = (binder.bindings().get(&id), health) else { continue };
                 let load = &health["load"];
                 let stages = &load["stages"];
                 let woke = load["inProgress"] == false && load["outcome"] == "ok" && stages.get("engine_start_to_ready").is_none();
@@ -900,7 +1075,7 @@ pub(crate) fn start_until(app: &AppHandle, shutdown: tokio_util::sync::Cancellat
                     continue;
                 }
                 let Some(awake) = capacity::local_used(&shutdown).await else { continue };
-                let Some((before, after, at)) = sleeping.lock().unwrap_or_else(std::sync::PoisonError::into_inner).remove(&id) else { continue };
+                let Some(Park { before, after, at, .. }) = sleeping.lock().unwrap_or_else(std::sync::PoisonError::into_inner).remove(&id) else { continue };
                 let cycle = crate::host_evidence::SleepCycle {
                     used_before_bytes: before, used_parked_bytes: after, used_awake_bytes: awake,
                     engine_wake_ms: wake, weight_reload_ms: reload,
@@ -920,6 +1095,12 @@ pub(crate) fn start_until(app: &AppHandle, shutdown: tokio_util::sync::Cancellat
             let runners_gone = state.environments.iter().filter_map(|env| runner_gone(&env.id, &env.name, &env.status, capacity_markers.get(&env.id)?,
                 seen.iter().find(|row| row.id == env.id).and_then(|row| row.health.as_ref()))).collect::<Vec<_>>();
             let name = |id: &str| models.iter().find(|model| model.id == id).map_or_else(|| id.to_owned(), |model| model.name.clone());
+            // The models still waiting this pass keep the reason an earlier pass recorded until a new
+            // one replaces it: the map is rebuilt every pass, and a reason recorded only after this
+            // pass's probe (a refused switch) was otherwise missing from most status reads.
+            let still_waiting = rows.iter().filter(|(_, h)| waiting(h)).map(|(id, _)| id.clone()).collect::<Vec<_>>();
+            // A refusal is remembered while its model waits: the next wait starts afresh.
+            last_wait.retain(|id, _| still_waiting.contains(id));
             let mut waiting = reasons(&rows, &silent, name);
             if let Some((first, _)) = demand(&rows).filter(|_| !unconfirmed.is_empty()) {
                 let names = unconfirmed.iter().map(|id| name(id)).collect::<Vec<_>>().join(", ");
@@ -933,7 +1114,15 @@ pub(crate) fn start_until(app: &AppHandle, shutdown: tokio_util::sync::Cancellat
                     waiting.insert(first.clone(), format!("{} keep GPU memory while Automatic GPU memory is off. Re-enable it or stop those models to let this model load.", disabled.join(", ")));
                 }
             }
-            *WAITING.lock().unwrap_or_else(|poisoned| poisoned.into_inner()) = waiting;
+            {
+                let mut shown = WAITING.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+                for id in &still_waiting {
+                    if !waiting.contains_key(id) {
+                        if let Some(reason) = shown.get(id) { waiting.insert(id.clone(), reason.clone()); }
+                    }
+                }
+                *shown = waiting;
+            }
             // Never admit another model while a loader owns the GPU.
             if rows.iter().any(|(_,h)|h["optimizer"]["loading"] == true) { continue; }
             // A vLLM runner asked to unload may park by sleep: the host probe is read around the
@@ -946,10 +1135,18 @@ pub(crate) fn start_until(app: &AppHandle, shutdown: tokio_util::sync::Cancellat
                 async move {
                     let before = if watched { capacity::local_used(shutdown).await } else { None };
                     let answer = model_request(&app, &id, "/v1/yougori/optimizer", Some(body)).await;
-                    if let (Some(before), Ok(reply)) = (before, &answer) {
-                        if reply["unloaded"] == true && reply["parked"] == "sleep" {
-                            if let Some(after) = capacity::local_used(shutdown).await {
-                                sleeping.lock().unwrap_or_else(std::sync::PoisonError::into_inner).insert(id.clone(), (before, after, std::time::Instant::now()));
+                    if let (true, Ok(reply)) = (watched, &answer) {
+                        if reply["unloaded"] == true {
+                            // This unload's park, measured; an unload that ended the engine, or a park
+                            // the probe could not read, leaves nothing of an earlier park.
+                            let park = match before {
+                                Some(before) if reply["parked"] == "sleep" => capacity::local_used(shutdown).await.map(|after| Park::of(reply, before, after)),
+                                _ => None,
+                            };
+                            let mut sleeping = sleeping.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+                            match park {
+                                Some(park) => { sleeping.insert(id.clone(), park); }
+                                None => { sleeping.remove(&id); }
                             }
                         }
                     }
@@ -1020,9 +1217,10 @@ pub(crate) fn start_until(app: &AppHandle, shutdown: tokio_util::sync::Cancellat
                         }
                         Err(reason) => {
                             // Logged once per reason, not once per two-second pass.
-                            if last_wait.get(id) != Some(&reason) {
+                            let kind = refusal_kind(&reason);
+                            if last_wait.get(id) != Some(&kind) {
                                 eprintln!("GPU co-admission of {id} waits: {reason}");
-                                last_wait.insert(id.clone(), reason.clone());
+                                last_wait.insert(id.clone(), kind);
                             }
                             let holders = others.iter().map(|(other, _)| name(other)).collect::<Vec<_>>().join(", ");
                             WAITING.lock().unwrap_or_else(|p| p.into_inner()).insert(id.clone(), capacity::waiting_words(&reason, &holders));
@@ -1040,7 +1238,25 @@ pub(crate) fn start_until(app: &AppHandle, shutdown: tokio_util::sync::Cancellat
                         continue;
                     }
                     let observations = seen.iter().filter_map(|row| row.health.clone().map(|h| (row.id.clone(), h))).collect::<Vec<_>>();
-                    let result = capacity::local_switch(id, health, &others, &observations, &capacity_markers, &runners_gone, requested, &shutdown, &send, &persist_capacity).await;
+                    // A runner parked by sleep asking again holds part of its own grant ([`capacity::Parked`]);
+                    // the engine's probes around its park say how much.
+                    let parked = sleeping.lock().unwrap_or_else(std::sync::PoisonError::into_inner).get(id).and_then(|park| park.credit(health));
+                    // Other vLLM runners parked by sleep keep part of the GPU without being resident:
+                    // once this model was refused for want of memory, they are unloaded with the
+                    // residents (their engines end), or no other model fits.
+                    let refused_for_room = last_wait.get(id).is_some_and(|kind| capacity::refused_for_room(kind));
+                    let mut unload = others.clone();
+                    unload.extend(parked_in_the_way(id, &rows, super::prepare::speculative(id), refused_for_room));
+                    let result = capacity::local_switch(id, health, &unload, &observations, &capacity_markers, &runners_gone, requested, parked, &shutdown, &send, &persist_capacity).await;
+                    if result.is_ok() { last_wait.remove(id); }
+                    if let Err(reason) = &result {
+                        // Logged once per reason, not once per pass.
+                        let kind = refusal_kind(reason);
+                        if last_wait.get(id) != Some(&kind) {
+                            eprintln!("GPU admission of {id} waits: {reason}");
+                            last_wait.insert(id.clone(), kind);
+                        }
+                    }
                     if let Err(reason) = result {
                         WAITING.lock().unwrap_or_else(|p| p.into_inner()).insert(id.clone(), reason);
                     }
@@ -1049,6 +1265,14 @@ pub(crate) fn start_until(app: &AppHandle, shutdown: tokio_util::sync::Cancellat
                 }
             } else {
                 let mut observations = seen.iter().filter_map(|row| row.health.clone().map(|h| (row.id.clone(), h))).collect::<Vec<_>>();
+                for (id, h) in &rows {
+                    let measured = sleeping.lock().unwrap_or_else(std::sync::PoisonError::into_inner).contains_key(id);
+                    if sleeper(h) && !measured {
+                        if let Ok(answer) = control::request(id, control::Action::Unload, h, &shutdown, control::TIMEOUT, &send).await {
+                            if let Some((_, observed)) = observations.iter_mut().find(|(key, _)| key == id) { *observed = answer; }
+                        }
+                    }
+                }
                 for (id,h) in &rows {
                     if idle_expired(h) && !super::prepare::keeps(id) {
                         if let Ok(answer) = control::request(id, control::Action::Unload, h, &shutdown, control::TIMEOUT, &send).await {
@@ -1303,13 +1527,22 @@ pub(crate) fn start_until(app: &AppHandle, shutdown: tokio_util::sync::Cancellat
     }
     #[test] fn only_vllm_runners_take_a_launch_mode() {
         let options = |pairs: &[(&str, &str)]| pairs.iter().map(|(k, v)| (k.to_string(), v.to_string())).collect::<std::collections::BTreeMap<_, _>>();
-        assert_eq!(launch_refusal(&EnvironmentKind::Container, &options(&[("YOUGORI_MODEL_FORMAT", "vllm")])), None);
-        for format in ["gguf", "safetensors"] {
-            assert!(launch_refusal(&EnvironmentKind::Container, &options(&[("YOUGORI_MODEL_FORMAT", format)])).unwrap().contains("Only vLLM"));
+        for mode in LAUNCHES {
+            assert_eq!(launch_refusal(&EnvironmentKind::Container, &options(&[("YOUGORI_MODEL_FORMAT", "vllm")]), mode), None);
         }
-        assert!(launch_refusal(&EnvironmentKind::Container, &options(&[])).is_some());
+        for format in ["gguf", "safetensors"] {
+            assert!(launch_refusal(&EnvironmentKind::Container, &options(&[("YOUGORI_MODEL_FORMAT", format)]), "speculative").unwrap().contains("Only vLLM"));
+        }
+        assert!(launch_refusal(&EnvironmentKind::Container, &options(&[]), "speculative").is_some());
         // A Neocloud pod's next start carries the launch (neocloud.rs forwards it to the pod).
-        assert_eq!(launch_refusal(&EnvironmentKind::Cloud, &options(&[("YOUGORI_MODEL_FORMAT", "vllm")])), None);
+        assert_eq!(launch_refusal(&EnvironmentKind::Cloud, &options(&[("YOUGORI_MODEL_FORMAT", "vllm")]), "megakernel"), None);
+        // A vLLM model from a folder keeps every launch but the megakernel, whose start would not fit
+        // the CUDA runtime's request (model_runner.rs, the injected-sources test).
+        let folder = options(&[("YOUGORI_MODEL_FORMAT", "vllm"), ("YOUGORI_MODEL_PATH", "/yougori-model")]);
+        for mode in ["compiled", "speculative", "eager"] {
+            assert_eq!(launch_refusal(&EnvironmentKind::Container, &folder, mode), None, "{mode}");
+        }
+        assert!(launch_refusal(&EnvironmentKind::Container, &folder, "megakernel").unwrap().contains("from a folder"));
         // The modes engine_backends.py reads, in the same order.
         let backends = include_str!("engine_backends.py");
         assert_eq!(backends.matches("VLLM_LAUNCHES = (\"compiled\", \"speculative\", \"eager\", \"megakernel\")").count(), 1);
@@ -1349,6 +1582,57 @@ pub(crate) fn start_until(app: &AppHandle, shutdown: tokio_util::sync::Cancellat
         assert!(parallel_refusal(&EnvironmentKind::Container, &options(&[])).is_some());
         assert!(parallel_refusal(&EnvironmentKind::Container, &options(&[("YOUGORI_MODEL_FORMAT", "gguf"), ("YOUGORI_NATIVE_BACKEND", "metal")])).unwrap().contains("native host"));
         assert!(parallel_refusal(&EnvironmentKind::Cloud, &options(&[("YOUGORI_MODEL_FORMAT", "gguf")])).unwrap().contains("cloud server"));
+    }
+    #[test] fn only_container_gguf_runners_take_a_context_window_of_4096_to_262144_tokens_in_steps_of_1024() {
+        let options = |pairs: &[(&str, &str)]| pairs.iter().map(|(k, v)| (k.to_string(), v.to_string())).collect::<std::collections::BTreeMap<_, _>>();
+        let gguf = options(&[("YOUGORI_MODEL_FORMAT", "gguf")]);
+        for tokens in [4096, 32_768, 65_536, 131_072, 262_144, 5120] {
+            assert_eq!(context_refusal(&EnvironmentKind::Container, &gguf, tokens), None, "{tokens}");
+        }
+        for tokens in [0, 1024, 3072, 4095, 131_000, 131_073, 263_168, u64::MAX] {
+            assert!(context_refusal(&EnvironmentKind::Container, &gguf, tokens).unwrap().contains("4,096–262,144 tokens in steps of 1,024"), "{tokens}");
+        }
+        for (format, words) in [("media", "--keep-outputs"), ("vllm", "fits its context window to the GPU"), ("safetensors", "Only GGUF models"), ("source", "Only GGUF models")] {
+            assert!(context_refusal(&EnvironmentKind::Container, &options(&[("YOUGORI_MODEL_FORMAT", format)]), 131_072).unwrap().contains(words), "{format}");
+        }
+        assert!(context_refusal(&EnvironmentKind::Container, &options(&[]), 131_072).is_some());
+        assert!(context_refusal(&EnvironmentKind::Container, &options(&[("YOUGORI_MODEL_FORMAT", "gguf"), ("YOUGORI_NATIVE_BACKEND", "metal")]), 131_072).unwrap().contains("native host"));
+        assert!(context_refusal(&EnvironmentKind::Cloud, &gguf, 131_072).unwrap().contains("cloud server"));
+    }
+    #[test] fn output_retention_and_launch_change_alone_and_start_settings_go_with_live_ones() {
+        // (live, start, launch, keep outputs)
+        for alone in [(true, false, false, false), (false, true, false, false), (true, true, false, false), (false, false, true, false), (false, false, false, true), (false, false, false, false)] {
+            assert_eq!(alone_refusal(alone.0, alone.1, alone.2, alone.3), None, "{alone:?}");
+        }
+        for (live, start, launch) in [(true, false, false), (false, true, false), (false, false, true)] {
+            assert!(alone_refusal(live, start, launch, true).unwrap().contains("output retention on its own"));
+        }
+        // The context window, like parallel requests, is a start setting: not beside a launch.
+        for (live, start) in [(true, false), (false, true), (true, true)] {
+            assert!(alone_refusal(live, start, true, false).unwrap().contains("launch mode on its own"));
+        }
+    }
+    #[test] fn start_settings_are_saved_for_the_next_start_and_answered_with_restart_required() {
+        let mut options = Options::default();
+        start_settings(&mut options, None, Some(131_072));
+        assert_eq!(options.environment[MODEL_CONTEXT], "131072");
+        assert!(!options.environment.contains_key("YOUGORI_MODEL_PARALLEL"));
+        start_settings(&mut options, Some(2), None);
+        assert_eq!((options.environment["YOUGORI_MODEL_PARALLEL"].as_str(), options.environment[MODEL_CONTEXT].as_str()), ("2", "131072"));
+        // engine_backends.py reads the same variable.
+        assert_eq!(include_str!("engine_backends.py").matches("\"YOUGORI_MODEL_CONTEXT\"").count(), 1);
+        // A GGUF model under the llama.cpp admission profile reserves for the window it saved.
+        let mut stamped = Options::default();
+        stamped.environment.extend([(capacity::POLICY.to_owned(), "local-single-llama-cpp-v1".to_owned()), (capacity::DEMAND.to_owned(), "1".to_owned()),
+            (capacity::GGUF.to_owned(), r#"{"tensorBytes":1000,"kvBytesPerToken":10}"#.to_owned())]);
+        start_settings(&mut stamped, None, Some(131_072));
+        assert_eq!(stamped.environment[capacity::DEMAND], (1000 + 10 * 131_072 + 512 * 1024 * 1024u64).to_string());
+        // Alone, and beside the settings the runner acknowledged.
+        assert_eq!(start_answer(json!({}), None, Some(131_072)), json!({"context": 131_072, "restartRequired": true}));
+        assert_eq!(start_answer(json!({}), Some(4), None), json!({"parallel": 4, "restartRequired": true}));
+        assert_eq!(start_answer(json!({}), Some(4), Some(65_536)), json!({"parallel": 4, "context": 65_536, "restartRequired": true}));
+        assert_eq!(start_answer(json!({"enabled": true}), None, Some(65_536)), json!({"enabled": true, "context": 65_536, "restartRequired": true}));
+        assert_eq!(start_answer(json!({"enabled": true}), None, None), json!({"enabled": true}));
     }
 
     #[test] fn real_demand_goes_before_a_model_waiting_only_for_its_preparation() {
@@ -1438,5 +1722,72 @@ pub(crate) fn start_until(app: &AppHandle, shutdown: tokio_util::sync::Cancellat
         assert_eq!(retention.policy.credit("keep-c"), Some(96.0));
         assert!(retention.parked.is_empty());
         for id in ["park-a", "park-b", "keep-c"] { RELOADS.lock().unwrap().remove(id); }
+    }
+
+    /// A vLLM runner parked by sleep (instance `instance`), with `pending` requests of its own
+    /// waiting; `ends` says whether its runner ends a parked engine while they wait.
+    fn parked_runner(instance: char, pending: u64, ends: bool) -> Value {
+        let mut health = fenced_health(false);
+        health["parked"] = json!("sleep");
+        health["status"] = json!(if pending > 0 { "queued" } else { "idle" });
+        health["optimizer"]["instanceId"] = json!(instance.to_string().repeat(32));
+        health["optimizer"]["pending"] = json!(pending);
+        if ends { health["optimizer"]["endsParkedWhileWaiting"] = json!(true); }
+        health
+    }
+
+    #[test] fn a_waiting_parked_engine_ends_for_the_first_in_line_once_it_was_refused_for_room() {
+        // A is first in line; B, parked by sleep, waits behind it, its leftover in A's way.
+        let rows = vec![("a".to_owned(), parked_runner('a', 1, true)), ("b".to_owned(), parked_runner('b', 2, true)),
+            ("idle".to_owned(), parked_runner('c', 0, false)), ("old".to_owned(), parked_runner('d', 1, false))];
+        let ended = |speculative, refused| parked_in_the_way("a", &rows, speculative, refused).into_iter().map(|(id, _)| id).collect::<Vec<_>>();
+        // Once A was refused for want of memory: the waiting B and the idle one end, never A's own
+        // engine, nor that of a runner that refuses such an unload while its requests wait.
+        assert_eq!(ended(false, true), ["b", "idle"]);
+        // A model that may fit beside their leftovers, or one a preparation started, ends none.
+        assert!(ended(false, false).is_empty());
+        assert!(ended(true, true).is_empty());
+        // The idle unload still takes only idle sleepers.
+        assert!(sleeper(&rows[2].1) && !sleeper(&rows[1].1));
+        // Busy, loading or awake runners are no parked engines.
+        for (field, value) in [("active", json!(1)), ("loading", json!(true)), ("resident", json!(true)), ("pinned", json!(true)), ("releaseUncertain", json!(true))] {
+            let mut busy = rows[1].1.clone();
+            busy["optimizer"][field] = value;
+            assert!(!parked_engine(&busy), "{field}");
+        }
+        assert!(control::ends_parked_while_waiting(&rows[1].1) && !control::ends_parked_while_waiting(&rows[3].1));
+        assert!(capacity::refused_for_room(&refusal_kind("GPU capacity is not available: VRAM on GPU x: 22583493552 bytes requested, 1203 bytes free")));
+        assert!(!capacity::refused_for_room("GPU eviction or target fencing was not confirmed. Capacity remains reserved."));
+    }
+
+    #[test] fn the_same_refusal_with_other_byte_counts_is_logged_once() {
+        let first = "GPU capacity is not available: VRAM on GPU x: 22583493552 bytes requested, 1203961856 bytes free under this host's capacity; it fits after 1514010624 bytes is released";
+        let next = "GPU capacity is not available: VRAM on GPU x: 22583493552 bytes requested, 1198718976 bytes free under this host's capacity; it fits after 1519253504 bytes is released";
+        assert_eq!(refusal_kind(first), refusal_kind(next));
+        assert_ne!(refusal_kind(first), refusal_kind("GPU grant outcome is unconfirmed. Its reservation remains held until reconciliation."));
+    }
+
+    #[test] fn a_park_is_credited_and_kept_only_while_its_engine_is_parked() {
+        let reply = json!({"unloaded": true, "parked": "sleep", "optimizer": {"instanceId": "a".repeat(32)}});
+        let park = Park::of(&reply, 10 << 30, 3 << 30);
+        let parked = parked_runner('a', 1, true);
+        assert_eq!(park.credit(&parked), Some(capacity::Parked { before: 10 << 30, after: 3 << 30 }));
+        assert!(park.describes(&parked, false));
+        // Its wake loads, then holds the model bound again: kept until the cycle is recorded.
+        let mut waking = fenced_health(false);
+        waking["optimizer"]["instanceId"] = json!("a".repeat(32));
+        waking["optimizer"]["loading"] = json!(true);
+        assert!(park.describes(&waking, false) && park.credit(&waking).is_none());
+        let mut awake = fenced_health(true);
+        awake["optimizer"]["instanceId"] = json!("a".repeat(32));
+        assert!(park.describes(&awake, true));
+        // Holding a model it is not bound with, its engine ended (an unload that did not park), or
+        // another runner instance: the numbers describe no engine it has, and are never credited.
+        assert!(!park.describes(&awake, false));
+        let mut ended = fenced_health(false);
+        ended["optimizer"]["instanceId"] = json!("a".repeat(32));
+        assert!(!park.describes(&ended, false) && park.credit(&ended).is_none());
+        let replaced = parked_runner('b', 1, true);
+        assert!(!park.describes(&replaced, false) && park.credit(&replaced).is_none());
     }
 }

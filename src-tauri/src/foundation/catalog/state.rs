@@ -13,6 +13,7 @@ use super::access::{GrantId, GrantState, LeaseId, LeaseState};
 use super::content::{ExtentDigest, ManifestError, ManifestLimits};
 use super::identity::{ArtifactClass, ObjectId, RootId, Scope};
 use super::import::{Flight, Subscriber};
+use super::lock::{RootLock, LOCK_FILE};
 use super::migrate::{
     migrate, read_layout, read_staging, read_versioned, FormatRefusal, MigrationReport, RecordKind,
     StagingRead, FLIGHT_FILE,
@@ -352,6 +353,39 @@ pub enum ObjectStatus {
     Absent,
 }
 
+/// Why [`Catalog::open`] opened nothing.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum OpenFailure {
+    /// The root's [`LOCK_FILE`] is locked: another catalog owns the root, in another process
+    /// or in this one. Nothing under the root was read, created or removed.
+    InUse { root: PathBuf },
+    /// A filesystem step under the root failed, or the layout is in a format this build does
+    /// not read.
+    Storage(StorageFailure),
+}
+
+impl From<StorageFailure> for OpenFailure {
+    fn from(failure: StorageFailure) -> Self {
+        Self::Storage(failure)
+    }
+}
+
+impl fmt::Display for OpenFailure {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::InUse { root } => write!(
+                f,
+                "the catalog root {} is in use: another open catalog holds its {LOCK_FILE}, so \
+                 nothing under it was read, created or removed",
+                root.display()
+            ),
+            Self::Storage(failure) => failure.fmt(f),
+        }
+    }
+}
+
+impl std::error::Error for OpenFailure {}
+
 /// What reopening found (line 533: nothing unpublished becomes visible).
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct OpenReport {
@@ -434,8 +468,10 @@ pub(super) struct Remnant {
 /// The immutable object catalog (S2 CORE-02) over one root directory the caller owns.
 ///
 /// Only the importer writes committed content; consumers read through leases and
-/// read-only handles. All file I/O stays under the root. Grants and leases live only as
-/// long as this value: they are not persisted, so a reopened catalog never revives one.
+/// read-only handles. All file I/O stays under the root, which the catalog holds
+/// exclusively for as long as it lives (`lock`): no other catalog, in this process or
+/// another, opens the root meanwhile. Grants and leases live only as long as this value:
+/// they are not persisted, so a reopened catalog never revives one.
 pub struct Catalog {
     pub(super) layout: Layout,
     pub(super) config: CatalogConfig,
@@ -456,6 +492,9 @@ pub struct Catalog {
     pub(super) leases: BTreeMap<LeaseId, LeaseState>,
     pub(super) failures: FailureLog,
     next_number: u64,
+    /// The root's exclusive lock, held for as long as the catalog lives. Declared last, so it
+    /// is released only after everything else of the catalog has gone.
+    _root_lock: RootLock,
 }
 
 impl fmt::Debug for Catalog {
@@ -474,13 +513,18 @@ impl Catalog {
     /// index and data length check out, and whose trust basis the current policy still
     /// accepts, are published; any other is quarantined and reported, an unreadable one is
     /// retained untouched, and unpublished data is never made visible.
+    ///
+    /// The root's exclusive lock is taken first (`lock`): a root another catalog holds is
+    /// refused with [`OpenFailure::InUse`] before anything under it is read, created or
+    /// removed, and the temporaries of interrupted writes are removed only under the lock.
     pub fn open(
         root: impl AsRef<Path>,
         config: CatalogConfig,
         verifiers: VerifierRegistry,
         clock: Arc<dyn Clock>,
-    ) -> Result<(Self, OpenReport), StorageFailure> {
+    ) -> Result<(Self, OpenReport), OpenFailure> {
         let layout = Layout::new(root.as_ref());
+        let root_lock = RootLock::acquire(&layout)?;
         layout.ensure()?;
         let from_format = read_layout(&layout)?;
         let migration = migrate(&layout, from_format, &mut |_| true)?.ok_or_else(|| {
@@ -511,9 +555,11 @@ impl Catalog {
             leases: BTreeMap::new(),
             failures,
             next_number: 0,
+            _root_lock: root_lock,
         };
         let now = catalog.clock.now();
         let mut report = OpenReport {
+            // Under the root's lock: no other catalog is writing them.
             temporaries_removed: catalog.layout.remove_temporaries()?,
             migration,
             ..OpenReport::default()

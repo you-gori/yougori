@@ -1,0 +1,25 @@
+---
+source: src/ui/tests.rs
+expression: text
+---
+ Yougori  Aider · qwen3-coder-30b                   ■ ended
+Aider v0.86
+Model: qwen3-coder-30b
+Repo: /workspace (12 files)
+
+>  add a health check, password •••••••••••••
+Applied edit to app.py
+>
+
+
+
+
+
+
+
+
+
+
+
+ ■ Aider ended with exit code 2.  q quit
+[no cursor]

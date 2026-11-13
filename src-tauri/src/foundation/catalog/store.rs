@@ -11,6 +11,7 @@
 //! <root>/records/<object>.json                publication: published iff this exists
 //! <root>/roots/<root>.json                    durable roots
 //! <root>/format.json                          the layout format (see `migrate`)
+//! <root>/catalog.lock                         empty; the open catalog locks it (see `lock`)
 //! ```
 //!
 //! Every record is written to a temporary file, synced and renamed into place, so a
@@ -468,7 +469,8 @@ impl Layout {
     }
 
     /// Removes temporary files an interrupted atomic write left behind; they were never
-    /// renamed into place, so they were never published.
+    /// renamed into place, so they were never published. Only an open catalog, which holds
+    /// the root's lock, calls it: no other catalog can be writing them.
     pub(super) fn remove_temporaries(&self) -> Result<usize, StorageFailure> {
         let mut removed = 0;
         for dir in [self.root.clone(), self.records(), self.roots()] {

@@ -14,7 +14,7 @@ sys.path.insert(0,str(Path(__file__).resolve().parents[1]/'site/harnesses'))
 from vm_package import Package
 
 
-class Packages(unittest.TestCase):
+class Fixture:
     def setUp(self):
         self.temp=tempfile.TemporaryDirectory();self.addCleanup(self.temp.cleanup);self.root=Path(self.temp.name)
 
@@ -37,6 +37,8 @@ class Packages(unittest.TestCase):
         while package.status()['phase']=='checking' and time.monotonic()<deadline:time.sleep(.01)
         return package.status()
 
+
+class Packages(Fixture,unittest.TestCase):
     def test_verified_package_installs_executable_and_removes_download(self):
         raw=self.archive();p=self.package(raw)
         self.assertEqual(self.finish(p,raw)['phase'],'ready')
@@ -62,6 +64,78 @@ class Packages(unittest.TestCase):
                 raw=self.archive(name,link);p=self.package(raw)
                 self.assertEqual(self.finish(p,raw)['phase'],'failed')
                 self.assertFalse((self.root/'tool/link').exists())
+
+
+class Declared(Fixture,unittest.TestCase):
+    """The Yougori harness's base image pins no package: the launcher declares the pack first."""
+
+    def declared(self,raw,harness='opencode'):
+        return {'harness':harness,'sha256':hashlib.sha256(raw).hexdigest(),'bytes':len(raw)}
+
+    def test_the_base_waits_for_the_declaration_before_any_chunk(self):
+        raw=self.archive();p=Package(self.root,shared=True)
+        self.assertEqual(p.status(),{'phase':'expecting','offset':0,'error':''})
+        with self.assertRaises(ValueError):p.chunk({'offset':0,'data':base64.b64encode(raw).decode()})
+        with self.assertRaises(ValueError):p.finish()
+        self.assertFalse(p.path.exists())
+        self.assertEqual(p.expect(self.declared(raw)),{'phase':'waiting','offset':0,'error':'','harness':'opencode'})
+        self.assertEqual(self.finish(p,raw),{'phase':'ready','offset':len(raw),'error':'','harness':'opencode'})
+        self.assertEqual((self.root/'tool/bin/app').read_bytes(),b'OK')
+        self.assertEqual(p.harness,'opencode')
+
+    def test_the_declaration_is_taken_once(self):
+        raw=self.archive();p=Package(self.root,shared=True);declared=self.declared(raw)
+        p.expect(declared)
+        # A lost reply: the same declaration again changes nothing, before or after chunks.
+        self.assertEqual(p.expect(dict(declared))['phase'],'waiting')
+        p.chunk({'offset':0,'data':base64.b64encode(raw[:5]).decode()})
+        self.assertEqual(p.expect(dict(declared)),{'phase':'waiting','offset':5,'error':'','harness':'opencode'})
+        for other in ({**declared,'harness':'kilo'},{**declared,'sha256':'0'*64},{**declared,'bytes':len(raw)+1},{'harness':'opencode'}):
+            with self.subTest(other=other),self.assertRaises(ValueError):p.expect(other)
+        self.assertEqual((p.harness,p.spec,p.offset),('opencode',{'sha256':declared['sha256'],'bytes':len(raw)},5))
+
+    def test_a_harness_without_a_pack_is_ready_at_once(self):
+        p=Package(self.root,shared=True)
+        self.assertEqual(p.expect({'harness':'yougori'}),{'phase':'ready','offset':0,'error':'','harness':'yougori'})
+        self.assertEqual(p.expect({'harness':'yougori'})['phase'],'ready')
+        with self.assertRaises(ValueError):p.chunk({'offset':0,'data':'T0s='})
+        with self.assertRaises(ValueError):p.expect({'harness':'yougori','sha256':'a'*64,'bytes':3})
+        p.finish()  # Nothing to finish: ready stays ready.
+        self.assertFalse((self.root/'tool').exists())
+
+    def test_a_declared_pack_is_verified_like_a_pinned_one(self):
+        raw=self.archive();p=Package(self.root,shared=True)
+        p.expect(self.declared(raw))
+        self.assertEqual(self.finish(p,raw[:-1]+bytes([raw[-1]^1]))['phase'],'failed')
+        self.assertFalse((self.root/'tool').exists())
+        self.assertFalse(p.path.exists())
+        with self.assertRaises(ValueError):p.expect(self.declared(raw,'kilo'))
+        for name,link in [('../escape',None),('/absolute',None),('tool/link','/etc/passwd'),('other/app',None)]:
+            with self.subTest(name=name,link=link):
+                raw=self.archive(name,link);p=Package(self.root,shared=True)
+                p.expect(self.declared(raw))
+                self.assertEqual(self.finish(p,raw)['phase'],'failed')
+                self.assertFalse((self.root/'tool/link').exists() or (self.root/'other').exists())
+
+    def test_invalid_declarations_and_images_that_take_none_are_refused(self):
+        p=Package(self.root,shared=True);digest='a'*64
+        for bad in (None,[],{},{'harness':'Bad'},{'harness':'../x'},{'harness':'a'*33},{'harness':7},
+                    {'harness':'opencode','sha256':'A'*64,'bytes':3},{'harness':'opencode','sha256':digest},
+                    {'harness':'opencode','bytes':3},{'harness':'opencode','sha256':digest,'bytes':0},
+                    {'harness':'opencode','sha256':digest,'bytes':True},{'harness':'opencode','sha256':digest,'bytes':(512<<20)+1},
+                    {'harness':'opencode','sha256':digest,'bytes':'3'},{'harness':'opencode','extra':1}):
+            with self.subTest(bad=bad),self.assertRaises(ValueError):p.expect(bad)
+        self.assertEqual((p.status()['phase'],p.harness),('expecting',None))
+        # An image that pins its package takes no declaration, nor does one that needs no package.
+        raw=self.archive();pinned=self.package(raw)
+        shared_pinned=Package(self.root,shared=True)
+        for package in (pinned,shared_pinned):
+            with self.assertRaises(ValueError):package.expect(self.declared(raw))
+            self.assertEqual(package.status()['phase'],'waiting')
+        (self.root/'tool-package.json').unlink()
+        plain=Package(self.root)
+        with self.assertRaises(ValueError):plain.expect({'harness':'yougori'})
+        self.assertEqual(plain.status(),{'phase':'ready','offset':0,'error':''})
 
 
 if __name__=='__main__':unittest.main()

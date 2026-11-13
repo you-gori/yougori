@@ -13,8 +13,30 @@ pub(super) struct HostBuffers {
     reservation: ReservationId,
 }
 
+/// How long a refused reservation keeps looking for room before the attach fails. VMs that start
+/// together reserve their memory moments apart, and models' file cache is being given back.
+const ROOM_WINDOW: std::time::Duration = std::time::Duration::from_secs(20);
+
 impl HostBuffers {
+    /// [`Self::reserve_once`], looked at again every second for [`ROOM_WINDOW`] while the host's
+    /// memory refuses it (seen 11 Nov 2026: three harness VMs starting together left 1.02 GB of
+    /// the 1 GiB, and the third one's image was refused at once). Other refusals end at once.
     pub(super) fn reserve(
+        sandbox: &SandboxId,
+        shutdown: &tokio_util::sync::CancellationToken,
+    ) -> Result<Self, String> {
+        let deadline = std::time::Instant::now() + ROOM_WINDOW;
+        loop {
+            match Self::reserve_once(sandbox, shutdown) {
+                Err(error) if refused_for_room(&error) && !shutdown.is_cancelled() && std::time::Instant::now() < deadline => {
+                    std::thread::sleep(std::time::Duration::from_secs(1));
+                }
+                outcome => return outcome,
+            }
+        }
+    }
+
+    fn reserve_once(
         sandbox: &SandboxId,
         shutdown: &tokio_util::sync::CancellationToken,
     ) -> Result<Self, String> {
@@ -40,7 +62,7 @@ impl HostBuffers {
                     retry_number: 0,
                 },
                 Priority::Foreground,
-                Amounts::new().host_ram_bytes(1 << 30),
+                Amounts::new().host_ram_bytes(IMAGE_HOST_BUFFER_BYTES),
             );
             let id = match guard
                 .reserve(request)
@@ -68,6 +90,14 @@ impl HostBuffers {
     }
 }
 
+/// Whether a reservation failed for want of host memory now ([`HostBuffers::reserve_once`]'s
+/// "refused" with the ledger's insufficient amount, or "cannot be admitted yet"), which a moment
+/// later may fit; a stopped engine, a poisoned ledger or a failed probe does not.
+fn refused_for_room(error: &str) -> bool {
+    (error.starts_with("Image host-buffer admission refused:") && error.contains("bytes free"))
+        || error.starts_with("Image host buffers cannot be admitted yet")
+}
+
 impl Drop for HostBuffers {
     fn drop(&mut self) {
         if let Ok(mut guard) = self.ledger.lock() {
@@ -92,5 +122,15 @@ mod tests {
             .err()
             .expect("a stopped engine must not admit host buffers");
         assert!(refusal.contains("cancelled"), "{refusal}");
+    }
+
+    #[test]
+    fn only_a_refusal_for_room_is_looked_at_again() {
+        // The ledger's words when three VMs starting together left too little (11 Nov 2026).
+        assert!(refused_for_room("Image host-buffer admission refused: host RAM: 1073741824 bytes requested, 1019418215 bytes free under this host's capacity after its supervisor reserve"));
+        assert!(refused_for_room("Image host buffers cannot be admitted yet; retry when memory is available"));
+        assert!(!refused_for_room("The host memory ledger is poisoned"));
+        assert!(!refused_for_room("Image host-buffer admission failed: the reservation was cancelled"));
+        assert!(!refused_for_room("host capacity observation was cancelled by shutdown"));
     }
 }

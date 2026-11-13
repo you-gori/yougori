@@ -5,7 +5,7 @@ use super::*;
 fn a_granted_runners_report_is_recorded_on_its_placement_reservation_as_a_guest_report() {
     let (sample, mut account) = test_accounting();
     account
-        .settle_and_admit(&sample, "model-a", Some(Demand::vllm(8 << 30)))
+        .settle_and_admit(&sample, "model-a", Some(Demand::vllm(8 << 30)), None)
         .unwrap();
     let child = account.grants["model-a"].child;
     // Before any report the reservation carries no observation.
@@ -39,7 +39,7 @@ fn a_granted_runners_report_is_recorded_on_its_placement_reservation_as_a_guest_
     assert!(!account.observe_runner_usage("model-b", 1).unwrap());
     // A settle that releases every grant forgets where to record.
     account
-        .settle_and_admit(&sample, "idle-reconciliation", None)
+        .settle_and_admit(&sample, "idle-reconciliation", None, None)
         .unwrap();
     assert!(account.grants.is_empty());
     assert!(!account.observe_runner_usage("model-a", 1).unwrap());

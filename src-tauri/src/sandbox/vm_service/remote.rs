@@ -80,6 +80,7 @@ impl<P: VmPorts> VmService<P> {
     ) -> Result<SandboxId, VmServiceError> {
         if spec.workload_image.is_some()
             || spec.internet
+            || spec.targets.is_some()
             || !spec.egress_endpoints.is_empty()
             || !spec.published.is_empty()
             || !spec.connect.is_empty()

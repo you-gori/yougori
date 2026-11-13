@@ -4,14 +4,20 @@ real website HTTP, SQLite and disposable model servers. No GPU.
 Run: python -I -B examples/hub/inference-solver/tests/test_routing.py
 """
 import base64
+import copy
+import functools
 import hashlib
 from http.server import ThreadingHTTPServer
+import importlib.util
+import io
 import json
+import os
 from pathlib import Path
 import secrets
 import sys
 import threading
 import time
+from types import SimpleNamespace
 import unittest
 from unittest.mock import patch
 
@@ -19,8 +25,53 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 from test_service import Flow, Model, UPSTREAM_KEY
 import compute
 import compute_node
+import gateway
 import routing
 from compute_adapter import Adapter
+
+
+@functools.lru_cache(maxsize=None)
+def yougori_model_server():
+    """Yougori's model server (src-tauri/src/model_server.py) as a module, for its own request checks.
+    It reads its model and key when loaded; nothing of it starts."""
+    with patch.dict(os.environ, {"YOUGORI_MODEL": "test/one", "YOUGORI_MODEL_TOKEN": "t" * 64}):
+        spec = importlib.util.spec_from_file_location("yougori_model_server", Path(__file__).resolve().parents[4] / "src-tauri/src/model_server.py")
+        module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(module)
+    return module
+
+
+class YougoriModel(Model):
+    """A model server that refuses what Yougori's refuses, with its words and codes: the body limit its
+    handler checks, then validate_chat. What it takes, it answers as the fixture model does."""
+
+    def do_POST(self):
+        if self.headers.get("Authorization") != "Bearer " + UPSTREAM_KEY:
+            return self.reply(401, {"error": UPSTREAM_KEY})
+        checks, raw = self.server.checks, self.rfile.read(int(self.headers["Content-Length"]))
+        try:
+            if len(raw) > (524288 if checks.agent_limits() else 65536):
+                raise checks.RequestLimit("Send a JSON body of at most " + ("512" if checks.agent_limits() else "64") + " KiB with Content-Length")
+            checks.validate_chat(copy.deepcopy(json.loads(raw)))
+        except (checks.RequestLimit, checks.ContextRefusal) as error:
+            refusal = error.body()
+        except (ValueError, TypeError):
+            refusal = {"error": {"message": "Invalid model request. Check message roles, content, context length and generation settings."}}
+        else:
+            # Taken: answered (and recorded) as the fixture model does.
+            self.rfile = io.BytesIO(raw)
+            return super().do_POST()
+        with self.server.lock:
+            self.server.calls.append(json.loads(raw))
+        return self.reply(400, refusal)
+
+
+class EchoingModel(Model):
+    """A model server that refuses every chat and writes the key it was sent into its words."""
+
+    def do_POST(self):
+        self.rfile.read(int(self.headers["Content-Length"]))
+        return self.reply(400, {"error": {"message": "This key may not chat: " + self.headers.get("Authorization", "")}})
 
 
 class RoutingFlow(Flow):
@@ -65,6 +116,8 @@ class RoutingFlow(Flow):
         status, pair, _ = self.call("/api/compute/pair/start", {"credential_hash": hashlib.sha256(token.encode()).hexdigest(), "name": "Contributor", "role": "contributor"})
         self.assertEqual(status, 200, pair)
         self.assertEqual(self.call("/api/compute/pair/approve", {"code": pair["code"]}, self.admin)[0], 200)
+        # A contributing computer serves only the models the administrator lists for computers.
+        self.assertEqual(self.call("/api/admin/compute/models", {"models": ["test/one"]}, self.admin)[0], 200)
         return token
 
     def agent(self, token, action, **data):
@@ -95,6 +148,45 @@ class RoutingFlow(Flow):
         self.assertEqual(sorted(s["source"] for s in details["sources"]), ["First server", "Second server"])
         self.assertEqual(sum(r["requests"] for r in details["routing"]), 36)
         self.assertEqual(sum(r["same"] for r in details["routing"]), 9)
+
+    def test_v1_models_gives_the_smallest_context_its_ready_servers_report(self):
+        """/v1/models gives each model the context its ready servers report, the smallest where
+        they differ, so a harness sizes its conversation to fit whichever serves it: from a model
+        server's own catalog (vLLM's max_model_len, another inference's context_length) and from a
+        connected computer's inventory. A server that is not ready does not count; a model none of
+        whose ready servers says, or says something unbelievable, has no context_length."""
+        self.model.entries = {"test/one": {"max_model_len": 65536}, "test/two": {"context_length": 100}}
+        self.connect(self.model_url, "First server")
+        url, second_server = self.model_server()
+        second_server.entries = {"test/one": {"context_length": 16384}}
+        second = self.connect(url, "Second server")
+        key = self.key()["key"]
+
+        def listed():
+            return {m["id"]: m.get("context_length", "unsaid") for m in self.call("/v1/models", key=key)[1]["data"]}
+        self.assertEqual(listed(), {"test/one": 16384, "test/two": "unsaid"})
+        self.assertEqual({m["id"]: m.get("context_length") for m in self.call("/api/models", session=self.admin)[1]["models"]}, {"test/one": 16384, "test/two": None})
+        second_server.fail_catalog = True
+        self.service.refresh()
+        with self.service.store.db() as db:
+            self.assertEqual(db.execute("SELECT state FROM endpoints WHERE id=?", (second,)).fetchone()[0], "unavailable")
+        self.assertEqual(listed(), {"test/one": 65536, "test/two": "unsaid"})
+        # A server that stops saying, at its next refresh, no longer counts.
+        self.model.entries = {}
+        self.service.refresh()
+        self.assertEqual(listed(), {"test/one": "unsaid", "test/two": "unsaid"})
+        # A connected computer says what its model server serves.
+        token = self.pair_node()
+        computer = {"id": "env-one", "name": "test/one", "state": "ready", "shared": True}
+        self.assertEqual(self.agent(token, "inventory", models=[{**computer, "context": 8192}])[0], 200)
+        self.assertEqual(listed()["test/one"], 8192)
+        for unbelievable in (255, 1048577, 8192.0, True, "8192", None):
+            with self.subTest(context=unbelievable):
+                self.assertEqual(self.agent(token, "inventory", models=[{**computer, "context": unbelievable}])[0], 200)
+                self.assertEqual(listed()["test/one"], "unsaid")
+        # Still loading: not counted until it is ready.
+        self.assertEqual(self.agent(token, "inventory", models=[{**computer, "state": "loading", "context": 4096}])[0], 200)
+        self.assertEqual(listed()["test/one"], "unsaid")
 
     def test_json_output_goes_only_to_replicas_whose_server_enforces_it(self):
         """A request with OpenAI's response_format is served by a replica whose server enforces
@@ -192,15 +284,272 @@ class RoutingFlow(Flow):
         broken.broken = False
         calls = sum(len(s.calls) for s in servers.values())
         # A refusal (a prompt longer than one replica's context) is tried on the other replica, which
-        # may have a longer context; it is the caller's answer when both refuse, and neither cools.
+        # may have a longer context; it is the caller's answer when both refuse, in the server's own
+        # words, and neither cools.
         status, body, _ = self.call("/v1/chat/completions", self.completion("test/one", content="refuse"), key=key)
-        self.assertEqual(status, 400, body)
+        self.assertEqual((status, body["error"]["message"]), (400, "The prompt is longer than the context."))
         self.assertEqual(sum(len(s.calls) for s in servers.values()), calls + 2)
         self.assertEqual(sum(r["failed"] for r in self.call("/api/admin/control", session=self.admin)[1]["routing"]), 1)  # The earlier failure only.
         for server in servers.values():
             server.broken = True
         status, body, _ = self.call("/v1/chat/completions", self.completion("test/one"), key=key)
         self.assertEqual(status, 502, body)
+        self.assertNotIn(UPSTREAM_KEY, json.dumps(body))
+
+    def test_a_model_that_calls_no_tools_still_answers_every_harness_in_text(self):
+        self.connect(self.model_url, "Model server")
+        self.model.plain = True
+        key = self.key()["key"]
+        schema = {"type": "object", "properties": {}}
+        # A coding agent's next turn: its tools, two calls it made, their results, a long reply limit.
+        conversation = [{"role": "system", "content": "You are a coding agent."}, {"role": "user", "content": "Open the notes"},
+                        {"role": "assistant", "content": None, "tool_calls": [
+                            {"id": "call_1", "type": "function", "function": {"name": "read", "arguments": '{"path": "notes.txt"}'}},
+                            {"id": "call_2", "type": "function", "function": {"name": "read", "arguments": '{"path": "todo.txt"}'}}]},
+                        {"role": "tool", "tool_call_id": "call_1", "content": "Buy milk"},
+                        {"role": "tool", "tool_call_id": "call_2", "content": [{"type": "text", "text": "Ship it"}]}]
+        before = len(self.model.calls)
+        status, body, _ = self.call("/v1/chat/completions", {"model": "test/one", "messages": conversation, "max_tokens": 32000, "tool_choice": "auto",
+                                                             "tools": [{"type": "function", "function": {"name": "read", "description": "Read a file", "parameters": schema}}]}, key=key)
+        self.assertEqual(status, 200, body)
+        self.assertIn("hello", json.dumps(body))
+        # Refused as sent, then with the reply limit the relay takes and the tools kept, then as plain chat.
+        asked, refused, sent = self.model.calls[before:]
+        self.assertEqual([("tools" in call, call["max_tokens"]) for call in (asked, refused, sent)], [(True, 32000), (True, 4096), (False, 4096)])
+        self.assertFalse({"tools", "tool_choice", "truncate"} & set(sent))  # truncate only for Yougori's own model servers
+        # The model is told that no tool is available and that nothing it writes runs, after the agent's own instructions.
+        self.assertEqual(sent["messages"], [
+            {"role": "system", "content": "You are a coding agent.\n\n" + gateway.NO_TOOLS}, {"role": "user", "content": "Open the notes"},
+            {"role": "assistant", "content": 'Called read with {"path": "notes.txt"}\n\nCalled read with {"path": "todo.txt"}'},
+            {"role": "user", "content": "Result of read:\nBuy milk\n\nResult of read:\nShip it"}])
+        self.assertIn("Nothing you write runs.", gateway.NO_TOOLS)
+        # The other harnesses' protocols: Messages (Claude Code, a reply limit of 32,000 first capped), Responses (Codex), Gemini.
+        for path, data, tries in [
+                ("/v1/messages", {"model": "test/one", "max_tokens": 32000, "messages": [{"role": "user", "content": "hi"}],
+                                  "tools": [{"name": "Read", "description": "Read a file", "input_schema": schema}]}, 3),
+                ("/v1/responses", {"model": "test/one", "input": "hi", "tools": [{"type": "function", "name": "shell", "description": "Run", "parameters": schema}]}, 2),
+                ("/v1beta/models/test%2Fone:generateContent", {"contents": [{"role": "user", "parts": [{"text": "hi"}]}],
+                                                              "tools": [{"functionDeclarations": [{"name": "read", "description": "Read", "parameters": schema}]}]}, 2)]:
+            before = len(self.model.calls)
+            status, body, _ = self.call(path, data, key=key)
+            self.assertEqual(status, 200, (path, body))
+            self.assertEqual(len(self.model.calls), before + tries, path)
+            self.assertIn("tools", self.model.calls[-2])
+            self.assertNotIn("tools", self.model.calls[-1])
+            self.assertEqual(self.model.calls[-1]["messages"][0], {"role": "system", "content": gateway.NO_TOOLS}, path)
+
+    def test_a_computer_takes_plain_chat_with_old_turns_dropped_but_a_too_long_conversation_is_not_sent_again(self):
+        class Computer:
+            def __init__(self, refusal):
+                self.bodies, self.refusal = [], refusal
+
+            def connect(self, url, body):
+                self.bodies.append(body)
+                if self.refusal:
+                    refusal, self.refusal = self.refusal, None
+                    raise refusal
+                return "connection", "response"
+
+        replica = {"id": "computer", "upstream": "test/one", "url": "compute://host/env", "secret": "", "same": False}
+        payload = {"model": "test/one", "messages": [{"role": "user", "content": "hi"}],
+                   "tools": [{"type": "function", "function": {"name": "read", "parameters": {"type": "object"}}}]}
+        computer = Computer(compute.UpstreamError("The model server refused this request.", 400))
+        self.assertEqual(gateway.dispatch(SimpleNamespace(router=routing.Router(), compute=computer), [replica], payload, "chat")[2], replica)
+        self.assertEqual([("tools" in body, body.get("truncate")) for body in computer.bodies], [(True, None), (False, True)])
+        computer = Computer(compute.UpstreamError("Conversation exceeds this model's 8704-token context window", 400, "yougori_context_window"))
+        with self.assertRaises(compute.UpstreamError) as refused:
+            gateway.dispatch(SimpleNamespace(router=routing.Router(), compute=computer), [replica], payload, "chat")
+        self.assertIn("8704-token", str(refused.exception))
+        self.assertEqual(len(computer.bodies), 1)
+        # A refusal of the tools' size is not answered by sending the request without them.
+        computer = Computer(compute.UpstreamError("Tool definitions exceed 48 KiB", 400, "yougori_request_limit"))
+        with self.assertRaises(compute.UpstreamError) as refused:
+            gateway.dispatch(SimpleNamespace(router=routing.Router(), compute=computer), [replica], payload, "chat")
+        self.assertEqual(str(refused.exception), "Tool definitions exceed 48 KiB. This request sent 1 tool definition "
+                                                 f"({len(json.dumps(payload['tools']))} bytes) and 1 message. Nothing reached the model.")
+        self.assertEqual(refused.exception.code, "yougori_request_limit")
+        self.assertEqual(len(computer.bodies), 1)
+
+    def yougori_server(self, form="gguf"):
+        """A model server that checks requests as Yougori's does (model_server.validate_chat, its own
+        code), its runner `form` (gguf calls tools; safetensors, the Transformers runner, calls none)."""
+        model_server = yougori_model_server()
+        patcher = patch.object(model_server, "FORMAT", form)
+        patcher.start()
+        self.addCleanup(patcher.stop)
+        url, server = self.model_server()
+        server.RequestHandlerClass = YougoriModel
+        server.checks = model_server
+        return url, server
+
+    def test_a_request_over_a_yougori_model_servers_tool_limits_reaches_the_harness_as_that_refusal(self):
+        url, server = self.yougori_server()
+        self.connect(url, "Model server")
+        key = self.key()["key"]
+        # 150 tools as HexStrike sent, then 33, then 30 whose definitions exceed 48 KiB, then 32 in a body over
+        # 64 KiB: refused once each, never sent again without the tools, and the harness is told what was too large.
+        for count, size, words in ((150, 30, "Agent tools require the GGUF or vLLM runner and 1 to 32 function definitions"),
+                                   (33, 100, "1 to 32 function definitions"), (30, 1700, "Tool definitions exceed 48 KiB"),
+                                   (32, 2100, "Send a JSON body of at most 64 KiB")):
+            tools = [{"type": "function", "function": {"name": f"tool_{n}", "description": "d" * size, "parameters": {"type": "object"}}}
+                     for n in range(count)]
+            before = len(server.calls)
+            status, body, _ = self.call("/v1/chat/completions", {"model": "test/one", "tools": tools,
+                                                                 "messages": [{"role": "user", "content": "Test the app"}]}, key=key)
+            with self.subTest(count=count):
+                self.assertEqual(status, 400, body)
+                self.assertEqual(len(server.calls), before + 1)
+                message = body["error"]["message"]
+                self.assertIn(words, message)
+                self.assertIn(f"This request sent {count} tool definitions ({len(json.dumps(tools)):,} bytes) and 1 message. "
+                              "Nothing reached the model.", message)
+        # Within the limits the tools reach the model.
+        tools = [{"type": "function", "function": {"name": f"tool_{n}", "description": "d" * 1000, "parameters": {"type": "object"}}} for n in range(30)]
+        self.assertLessEqual(len(json.dumps(tools)), 48 * 1024)
+        status, body, _ = self.call("/v1/chat/completions", {"model": "test/one", "tools": tools, "messages": [{"role": "user", "content": "Test"}]}, key=key)
+        self.assertEqual(status, 200, body)
+        self.assertEqual(len(server.calls[-1]["tools"]), 30)
+
+    def test_an_output_budget_over_the_relays_limit_is_capped_and_the_tools_stay(self):
+        url, server = self.yougori_server()
+        self.connect(url, "Model server")
+        key = self.key()["key"]
+        tools = [{"type": "function", "function": {"name": "read", "description": "Read a file", "parameters": {"type": "object"}}}]
+        # DeepSeek asks 32,768 as max_completion_tokens; Claude Code 32,000 as max_tokens through Messages.
+        status, body, _ = self.call("/v1/chat/completions", {"model": "test/one", "tools": tools, "max_completion_tokens": 32768,
+                                                             "messages": [{"role": "user", "content": "Read it"}]}, key=key)
+        self.assertEqual(status, 200, body)
+        self.assertEqual([(len(call["tools"]), call["max_completion_tokens"]) for call in server.calls], [(1, 32768), (1, 4096)])
+        before = len(server.calls)
+        status, body, _ = self.call("/v1/messages", {"model": "test/one", "max_tokens": 32000, "messages": [{"role": "user", "content": "hi"}],
+                                                     "tools": [{"name": "Read", "description": "Read a file", "input_schema": {"type": "object"}}]}, key=key)
+        self.assertEqual(status, 200, body)
+        self.assertEqual([(len(call["tools"]), call["max_tokens"]) for call in server.calls[before:]], [(1, 32000), (1, 4096)])
+        # A conversation over the server's own limit reaches the harness in the server's words, sent once.
+        before = len(server.calls)
+        status, body, _ = self.call("/v1/chat/completions", {"model": "test/one", "messages": [{"role": "user", "content": "x" * 40000}]}, key=key)
+        self.assertEqual((status, body["error"]["message"]), (400, "Conversation exceeds 32,768 characters; start a new chat"))
+        self.assertEqual(len(server.calls), before + 1)
+
+    def test_a_model_whose_runner_calls_no_tools_answers_in_text_and_is_told_that_nothing_runs(self):
+        url, server = self.yougori_server("safetensors")
+        self.connect(url, "Model server")
+        key = self.key()["key"]
+        tools = [{"type": "function", "function": {"name": "nmap_scan", "description": "Scan", "parameters": {"type": "object"}}}]
+        status, body, _ = self.call("/v1/chat/completions", {"model": "test/one", "tools": tools, "messages": [
+            {"role": "system", "content": "Use the available tools."}, {"role": "user", "content": "Scan the app"}]}, key=key)
+        self.assertEqual(status, 200, body)
+        refused, sent = server.calls
+        self.assertIn("tools", refused)
+        self.assertNotIn("tools", sent)
+        self.assertEqual(sent["messages"][0], {"role": "system", "content": "Use the available tools.\n\n" + gateway.NO_TOOLS})
+        # A request refused as plain chat too is the caller's answer after one more try, and one with
+        # nothing to drop is not sent again.
+        for extra, tries in (({"tools": tools}, 2), ({}, 1)):
+            before = len(server.calls)
+            status, body, _ = self.call("/v1/chat/completions", {"model": "test/one", "messages": [{"role": "user", "content": "x" * 40000}], **extra}, key=key)
+            self.assertEqual((status, body["error"]["message"]), (400, "Conversation exceeds 32,768 characters; start a new chat"))
+            self.assertEqual(len(server.calls), before + tries)
+
+    def test_a_refusal_without_a_yougori_code_goes_once_more_as_plain_chat_even_to_a_server_that_calls_tools(self):
+        """dispatch(): plain chat follows every refusal but a size or context refusal. A refusal
+        without a Yougori code can come from a server that does call tools: the request still goes
+        once more as plain chat, and the model is told that no tools are available and that nothing
+        it writes runs."""
+        url, server = self.yougori_server()
+        self.connect(url, "Model server")
+        key = self.key()["key"]
+        tools = [{"type": "function", "function": {"name": "read", "description": "Read a file", "parameters": {"type": "object"}}}]
+        # A tool result that answers no call: Yougori's server refuses it in its generic words, without a code.
+        status, body, _ = self.call("/v1/chat/completions", {"model": "test/one", "tools": tools, "messages": [
+            {"role": "user", "content": "Read it"}, {"role": "tool", "tool_call_id": "call_9", "content": "Buy milk"}]}, key=key)
+        self.assertEqual(status, 200, body)
+        refused, sent = server.calls
+        self.assertIn("tools", refused)
+        self.assertNotIn("tools", sent)
+        self.assertEqual(sent["messages"], [{"role": "system", "content": gateway.NO_TOOLS},
+                                            {"role": "user", "content": "Read it\n\nResult of a tool:\nBuy milk"}])
+
+    def test_a_chat_without_a_user_message_goes_with_its_instructions_as_the_users(self):
+        """Plandex names each plan with a system message alone. Yougori's model server refuses a chat
+        without a user message, and the relay put its own words over the server's: every Plandex
+        prompt failed with "Check its context length and parameters"."""
+        url, server = self.yougori_server()
+        self.connect(url, "Model server")
+        key = self.key()["key"]
+        text = "You name plans. Reply with three words."
+        for messages, sent in (
+                # As Plandex sends it: one system message in parts.
+                ([{"role": "system", "content": [{"type": "text", "text": text}]}], [{"role": "user", "content": [{"type": "text", "text": text}]}]),
+                ([{"role": "system", "content": text}, {"role": "developer", "content": "Use English."}],
+                 [{"role": "user", "content": text + "\n\nUse English."}])):
+            with self.subTest(messages=messages):
+                status, body, _ = self.call("/v1/chat/completions", {"model": "test/one", "messages": messages, "max_tokens": 16}, key=key)
+                self.assertEqual(status, 200, body)
+                self.assertEqual(server.calls[-1]["messages"], sent)
+        # Through the Responses API too: instructions with no input.
+        status, body, _ = self.call("/v1/responses", {"model": "test/one", "instructions": text, "input": []}, key=key)
+        self.assertEqual(status, 200, body)
+        self.assertEqual(server.calls[-1]["messages"], [{"role": "user", "content": text}])
+        # A chat with a user message goes as it is.
+        conversation = [{"role": "system", "content": text}, {"role": "user", "content": "Add sign-in"}]
+        status, body, _ = self.call("/v1/chat/completions", {"model": "test/one", "messages": conversation}, key=key)
+        self.assertEqual(status, 200, body)
+        self.assertEqual(server.calls[-1]["messages"], conversation)
+        # A chat the server still refuses reaches the caller in the server's own words, sent once.
+        before = len(server.calls)
+        status, body, _ = self.call("/v1/chat/completions", {"model": "test/one", "messages": [{"role": "assistant", "content": "Hello"}]}, key=key)
+        self.assertEqual((status, body["error"]["message"]), (400, "Invalid model request. Check message roles, content, context length and generation settings."))
+        self.assertEqual(len(server.calls), before + 1)
+
+    def test_a_refusal_reaches_the_caller_in_the_model_servers_own_words(self):
+        """refusal(): the server's error message on one line of printable ASCII, at most 300
+        characters, with its code when that is a lower-case name; the relay's own words only when
+        it gave none."""
+        class Response:
+            def __init__(self, raw):
+                self.raw, self.closed = raw, False
+
+            def read(self, limit):
+                return self.raw[:limit]
+
+            def close(self):
+                self.closed = True
+
+        for raw, words, code in (
+                (b'{"error": {"code": "yougori_request_limit", "message": "Tool definitions exceed 48 KiB"}}', "Tool definitions exceed 48 KiB", "yougori_request_limit"),
+                (b'{"error": {"code": "yougori_context_window", "message": "Conversation exceeds\\u00e9 the\\n window\\u001b[2J"}}',
+                 "Conversation exceeds the window[2J", "yougori_context_window"),
+                # Yougori's own words for a request it does not take, which name no code.
+                (b'{"error": {"message": "Invalid model request. Check message roles, content, context length and generation settings."}}',
+                 "Invalid model request. Check message roles, content, context length and generation settings.", ""),
+                # Other servers: llama.cpp, OpenAI, older vLLM (the message at the top) and a bare error.
+                (b'{"error": {"code": 400, "message": "the request exceeds the available context size, try increasing it", "type": "exceed_context_size_error"}}',
+                 "the request exceeds the available context size, try increasing it", ""),
+                (b'{"error": {"code": "context_length_exceeded", "message": "This model\'s maximum context length is 8192 tokens."}}',
+                 "This model's maximum context length is 8192 tokens.", "context_length_exceeded"),
+                (b'{"object": "error", "message": "max_tokens must be at most 2048", "code": 400}', "max_tokens must be at most 2048", ""),
+                (b'{"error": "tools are not supported by this model"}', "tools are not supported by this model", ""),
+                (b'{"error": {"code": "Not A Code", "message": "' + b"w" * 400 + b'"}}', "w" * 300, ""),
+                (b'{"error": {"message": " \\u00e9 "}}', gateway.REFUSED, ""),
+                (b'{"error": {}}', gateway.REFUSED, ""),
+                (b"[]", gateway.REFUSED, ""),
+                (b"not json", gateway.REFUSED, "")):
+            response, connection = Response(raw), Response(b"")
+            error = gateway.refusal(connection, response)
+            with self.subTest(raw=raw):
+                self.assertEqual((str(error), error.status, error.code), (words, 400, code))
+                self.assertTrue(response.closed and connection.closed)
+        # A server that echoes its own key never passes it on, not even in part at the cut.
+        for message, words in (("Key " + UPSTREAM_KEY + " may not use tools", "Key [hidden] may not use tools"),
+                               ("w" * 290 + UPSTREAM_KEY, "w" * 290 + "[hidden]")):
+            error = gateway.refusal(Response(b""), Response(json.dumps({"error": {"message": message}}).encode()), UPSTREAM_KEY)
+            self.assertEqual(str(error), words)
+        url, server = self.model_server()
+        server.RequestHandlerClass = EchoingModel
+        self.connect(url, "Model server")
+        status, body, _ = self.call("/v1/chat/completions", self.completion("test/one"), key=self.key()["key"])
+        self.assertEqual((status, body["error"]["message"]), (400, "This key may not chat: Bearer [hidden]"))
         self.assertNotIn(UPSTREAM_KEY, json.dumps(body))
 
     def test_router_keeps_a_conversation_unless_its_replica_is_full_and_another_has_room(self):
@@ -492,7 +841,6 @@ class RoutingFlow(Flow):
                 self.shared.add(environment)
                 self.apis[environment] = {"apiUrl": model_url, "apiKey": UPSTREAM_KEY, "model": "test/one"}
 
-        answers = iter(["1", "n"])
         outcome = []
 
         def run():
@@ -503,7 +851,7 @@ class RoutingFlow(Flow):
 
         with patch.dict(os.environ, {"LOCALAPPDATA": str(home)}), patch.object(compute_node, "executable", lambda: "unused"), \
                 patch.object(compute_node, "Adapter", FakeAdapter), patch.object(compute_node, "CAPACITY", 1), \
-                patch("builtins.input", lambda prompt="": next(answers)), patch("sys.argv", ["compute_node.py"]):
+                patch("sys.argv", ["compute_node.py", "--models", "env-one", "--sandbox", "none"]):
             connector = threading.Thread(target=run, daemon=True)
             connector.start()
             for _ in range(500):

@@ -197,6 +197,28 @@ fn hidden(program: &str) -> Command {
     command
 }
 
+/// How long a VM launch waits for WSL to drop its page cache; it looks at the host's memory again
+/// for a while afterwards anyway.
+const PAGE_CACHE_WAIT: Duration = Duration::from_secs(10);
+
+/// The request that has the runtime's guest drop its clean page cache and compact what is free.
+/// No `sync` first: dropping the cache frees only clean pages anyway, the kernel writes dirty ones
+/// back by itself, and a sync behind a large download blocks for tens of seconds.
+fn page_cache_request(distribution: &str) -> Command {
+    let mut command = hidden("wsl.exe");
+    command.args([
+        "-d",
+        distribution,
+        "-u",
+        "root",
+        "--exec",
+        "/bin/sh",
+        "-c",
+        "echo 1 > /proc/sys/vm/drop_caches; echo 1 > /proc/sys/vm/compact_memory 2>/dev/null; true",
+    ]);
+    command
+}
+
 fn setup_failure(log_path: &Path) -> String {
     use std::io::{Read, Seek, SeekFrom};
     // Setup output can be large. Read only its tail and the explicit error
@@ -759,6 +781,37 @@ impl CudaRuntime {
 
     pub async fn owns_runtime(&self) -> bool { self.process.lock().await.is_some() }
 
+    /// Asks the running WSL 2 runtime to drop its clean page cache: the model weights and image
+    /// layers it has read stay in WSL's own memory, which Windows cannot give a VM until the guest
+    /// frees it (WSL then reports the freed pages back). Never starts a stopped runtime: the request
+    /// starts only while this process holds a live, non-cleanup runtime, under the same lock. Whether
+    /// the guest took the request.
+    pub async fn reclaim_page_cache(&self) -> Result<bool, String> {
+        self.reclaim_with(page_cache_request, PAGE_CACHE_WAIT).await
+    }
+
+    /// [`Self::reclaim_page_cache`] with the request `request` builds for the runtime's distribution,
+    /// waited for at most `wait`. The lock is held only to start it: every container command, status
+    /// read and shutdown needs the same lock, and a page cache request can take seconds.
+    async fn reclaim_with(&self, request: impl FnOnce(&str) -> Command, wait: Duration) -> Result<bool, String> {
+        let mut child = {
+            let mut guard = self.process.lock().await;
+            let Some(process) = guard.as_mut() else { return Ok(false) };
+            if process.cleanup_only || process.child.try_wait().map_err(|e| e.to_string())?.is_some() {
+                return Ok(false);
+            }
+            let installation = self.installation()?;
+            // A request still running when the wait ends is stopped with it.
+            request(&installation.distribution).kill_on_drop(true).spawn()
+                .map_err(|e| format!("Ask WSL to free its page cache: {e}"))?
+        };
+        let status = tokio::time::timeout(wait, child.wait())
+            .await
+            .map_err(|_| format!("WSL did not answer the page cache request within {} seconds", wait.as_secs()))?
+            .map_err(|e| format!("Ask WSL to free its page cache: {e}"))?;
+        Ok(status.success())
+    }
+
     async fn shutdown_locked(&self, guard: &mut Option<Process>) -> Result<(), String> {
         let Some(process) = guard.as_mut() else {
             return Ok(());
@@ -906,6 +959,50 @@ mod tests {
         assert!(runtime.ensure_started().await.unwrap_err().contains("cleanup"));
         let mut process = runtime.process.lock().await.take().unwrap();
         assert!(process.child.try_wait().unwrap().is_none());
+        process.child.kill().await.unwrap();
+        process.child.wait().await.unwrap();
+    }
+
+    #[test]
+    fn the_page_cache_request_does_not_wait_for_a_sync() {
+        let command = page_cache_request("Yougori-CUDA-0123456789ab");
+        let args = command.as_std().get_args().map(|arg| arg.to_string_lossy().into_owned()).collect::<Vec<_>>();
+        assert_eq!(args[..2], ["-d", "Yougori-CUDA-0123456789ab"]);
+        let script = args.last().unwrap();
+        assert!(script.contains("echo 1 > /proc/sys/vm/drop_caches") && !script.contains("sync"), "{script}");
+    }
+
+    #[cfg(windows)]
+    #[tokio::test]
+    async fn a_page_cache_request_holds_the_runtime_lock_only_to_start() {
+        let directory = tempfile::tempdir().unwrap();
+        let runtime = CudaRuntime::new(directory.path().to_owned()).unwrap();
+        // This process runs no runtime: nothing is asked, and nothing is started.
+        assert_eq!(runtime.reclaim_with(|_| panic!("a stopped runtime is never asked"), Duration::from_secs(1)).await, Ok(false));
+        let (distribution, digest) = identity(directory.path()).unwrap();
+        std::fs::write(directory.path().join("installed.json"),
+            serde_json::json!({"version": 1, "distribution": distribution, "identity": digest}).to_string()).unwrap();
+        let child = hidden("powershell.exe").args(["-NoProfile", "-NonInteractive", "-Command", "Start-Sleep -Seconds 30"]).kill_on_drop(true).spawn().unwrap();
+        let endpoint = Endpoint { base_url: "http://127.0.0.1:9".into(), token: "unused".into() };
+        *runtime.process.lock().await = Some(Process { child, endpoint, _ownership: runtime.ownership().unwrap(), cleanup_only: false });
+        // A request that takes longer than its wait (a guest busy writing a download back).
+        let slow = |name: &str| {
+            assert_eq!(name, distribution);
+            let mut command = hidden("powershell.exe");
+            command.args(["-NoProfile", "-NonInteractive", "-Command", "Start-Sleep -Seconds 20"]);
+            command
+        };
+        let started = std::time::Instant::now();
+        let others = async {
+            // Container commands, status reads and shutdown take the lock while the request runs.
+            tokio::time::sleep(Duration::from_millis(1500)).await;
+            tokio::time::timeout(Duration::from_millis(500), runtime.process.lock()).await.is_ok()
+        };
+        let (outcome, others_ran) = tokio::join!(runtime.reclaim_with(slow, Duration::from_secs(4)), others);
+        assert!(others_ran, "the runtime lock was held while the request ran");
+        assert_eq!(outcome, Err("WSL did not answer the page cache request within 4 seconds".to_owned()));
+        assert!(started.elapsed() < Duration::from_secs(15), "the wait did not end the request");
+        let mut process = runtime.process.lock().await.take().unwrap();
         process.child.kill().await.unwrap();
         process.child.wait().await.unwrap();
     }

@@ -83,7 +83,7 @@ fn a_kept_resident_is_credited_with_what_it_reports_at_most_its_reservation_and_
     // Model A is granted 10 GiB on an otherwise empty GPU (1 GiB used by the host).
     let before = sample(GIB);
     let (_, mut a) = world(&before);
-    a.settle_and_admit(&before, "a", Some(transformers(10 * GIB)))
+    a.settle_and_admit(&before, "a", Some(transformers(10 * GIB)), None)
         .unwrap();
     // A is resident, holding 8 GiB; the probe sees 9 GiB used. Crediting A's 8 GiB leaves
     // 1 GiB unmanaged, so B's 10 GiB fits: 24 - 0.25 reserve - 1 unmanaged - 10 A = 12.75.
@@ -140,7 +140,7 @@ fn an_idle_resident_is_parked_for_a_demand_that_does_not_fit_beside_it_and_the_g
 ) {
     let before = sample(GIB);
     let (_, mut a) = world(&before);
-    a.settle_and_admit(&before, "a", Some(transformers(14 * GIB)))
+    a.settle_and_admit(&before, "a", Some(transformers(14 * GIB)), None)
         .unwrap();
     // B wants 14 GiB too; beside A only 24 - 0.25 - 1 - 14 = 8.75 GiB is left. A is idle.
     let now = sample(13 * GIB);
@@ -214,7 +214,7 @@ fn two_transformers_models_share_the_gpu_fairly_the_resident_is_trimmed_then_the
     // A is resident under its full stamp, holding 2 GiB of it.
     let before = sample(GIB);
     let (_, mut a) = world(&before);
-    a.settle_and_admit(&before, "a", Some(stamped.demand))
+    a.settle_and_admit(&before, "a", Some(stamped.demand), None)
         .unwrap();
     let mut resident_facts = BTreeMap::new();
     resident_facts.insert("a".to_owned(), (facts, stamped.context));
@@ -288,7 +288,7 @@ fn two_transformers_models_share_the_gpu_fairly_the_resident_is_trimmed_then_the
     // the resident it asked to make room: with the GPU emptier at the second settle, B still
     // gets the share A was held to.
     let (_, mut c) = world(&before);
-    c.settle_and_admit(&before, "a", Some(stamped.demand))
+    c.settle_and_admit(&before, "a", Some(stamped.demand), None)
         .unwrap();
     let emptier = sample(GIB + 512 * MIB);
     let granted = c
@@ -316,7 +316,7 @@ fn two_transformers_models_share_the_gpu_fairly_the_resident_is_trimmed_then_the
     // A busy A that accepted less than asked (it holds more) leaves B the longest context
     // that fits what remains, shorter than the share.
     let (_, mut b) = world(&before);
-    b.settle_and_admit(&before, "a", Some(stamped.demand))
+    b.settle_and_admit(&before, "a", Some(stamped.demand), None)
         .unwrap();
     let mut partly = BTreeMap::new();
     partly.insert("a".to_owned(), asked.bytes + 6 * GIB);
@@ -353,7 +353,7 @@ fn under_outside_pressure_beyond_the_residents_reservations_nothing_is_trimmed_f
     let before = sample(GIB);
     let (_, mut a) = world(&before);
     let share = facts.demand_at(6656).unwrap();
-    a.settle_and_admit(&before, "a", Some(transformers(share)))
+    a.settle_and_admit(&before, "a", Some(transformers(share)), None)
         .unwrap();
     let mut resident_facts = BTreeMap::new();
     resident_facts.insert("a".to_owned(), (facts, stamped.context));
@@ -410,7 +410,7 @@ fn beside_a_resident_without_facts_the_newcomer_takes_the_longest_context_that_f
     let before = sample(GIB);
     let (_, mut a) = world(&before);
     // A holds 16 GiB under a stamp made before the facts were recorded: it cannot be trimmed.
-    a.settle_and_admit(&before, "a", Some(transformers(16 * GIB)))
+    a.settle_and_admit(&before, "a", Some(transformers(16 * GIB)), None)
         .unwrap();
     let facts = qwen_facts();
     let stamped = facts
@@ -442,7 +442,7 @@ fn beside_a_resident_without_facts_the_newcomer_takes_the_longest_context_that_f
     assert_eq!(a.grants["b"].reserved, terms.bytes);
     // Without its own facts (a stamp made before co-residency) nothing shorter is derived.
     let (_, mut b) = world(&before);
-    b.settle_and_admit(&before, "a", Some(transformers(16 * GIB)))
+    b.settle_and_admit(&before, "a", Some(transformers(16 * GIB)), None)
         .unwrap();
     let refused = b
         .settle_and_coadmit(
@@ -518,7 +518,7 @@ fn the_parker_gives_up_idle_roots_in_order_until_the_shortfall_is_covered_and_no
 ) {
     let before = sample(GIB);
     let (_, mut a) = world(&before);
-    a.settle_and_admit(&before, "a", Some(transformers(6 * GIB)))
+    a.settle_and_admit(&before, "a", Some(transformers(6 * GIB)), None)
         .unwrap();
     let now = sample(7 * GIB);
     // B 6 GiB beside A: fits (24 - 0.25 - 1 - 6 = 16.75), so nothing is parked even
@@ -590,7 +590,7 @@ fn a_share_is_computed_only_once_the_gpus_use_has_settled_so_a_returning_spike_t
     let before = sample(GIB);
     let (_, mut a) = world(&before);
     let share = facts.demand_at(6656).unwrap();
-    a.settle_and_admit(&before, "a", Some(transformers(share)))
+    a.settle_and_admit(&before, "a", Some(transformers(share)), None)
         .unwrap();
     let mut resident_facts = BTreeMap::new();
     resident_facts.insert("a".to_owned(), (facts, stamped.context));
@@ -685,7 +685,7 @@ fn a_dead_runners_grant_returns_through_the_probe_while_the_residents_keep_their
     // A alone, then B beside A: two grants.
     let before = sample(GIB);
     let (_, mut a) = world(&before);
-    a.settle_and_admit(&before, "a", Some(transformers(6 * GIB)))
+    a.settle_and_admit(&before, "a", Some(transformers(6 * GIB)), None)
         .unwrap();
     let now = sample(7 * GIB);
     let granted = a

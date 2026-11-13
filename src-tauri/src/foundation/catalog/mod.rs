@@ -14,6 +14,11 @@
 //!   catalog publication (line 533). An interrupted or cancelled import never publishes,
 //!   and imports are single-flight per tenant scope, source and model execution identity:
 //!   another execution of the tenant subscribes to the running import.
+//! - **One owner per root.** Opening a catalog takes the root's exclusive lock
+//!   ([`LOCK_FILE`]), an operating-system file lock released when its process ends, so a
+//!   crash leaves none behind. A second open of a held root, from another engine or this
+//!   one, is refused before it reads, creates or removes anything there, so recovery on open
+//!   never removes the files of another catalog's writes in progress.
 //! - **Resumable verified data.** Objects are made of extents, each with its own digest;
 //!   an interrupted import resumes from re-verified extents only and fetches corrupt ones
 //!   again.
@@ -77,6 +82,7 @@ mod content;
 mod identity;
 mod import;
 mod lifecycle;
+mod lock;
 mod migrate;
 mod provenance;
 mod state;
@@ -112,6 +118,7 @@ pub use lifecycle::{
     ImportEvictionRefusal, LocalModelDeletion, RootRefusal, RootView, SourceFileDeletion,
     SourceFileTarget, VerifyError,
 };
+pub use lock::LOCK_FILE;
 pub use migrate::{
     FormatRefusal, MigrationReport, RecordKind, Rekeyed, Unresumable, UnresumableReason,
     CATALOG_FORMAT,
@@ -122,7 +129,7 @@ pub use provenance::{
 };
 pub use state::{
     Catalog, CatalogConfig, CatalogLimits, IntegrityFailure, MetadataError, ObjectMetadata,
-    ObjectStatus, OpenReport, QuotaRefusal, QuotaUsage, TrustRevision,
+    ObjectStatus, OpenFailure, OpenReport, QuotaRefusal, QuotaUsage, TrustRevision,
 };
 pub use summary::{CatalogSummary, ClassSummary, ObjectTally, QuotaCharge, ScopeSummary};
 pub use trust::{

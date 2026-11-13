@@ -45,7 +45,7 @@ export function NetworkOptionsForm({ value, onChange, disabled, gridHosting }: {
           <div className="creation-network-option">
             <div className="creation-network-toggle"><div>
               <label htmlFor={`${id}-outgoing`}>Outgoing — allow all</label>
-              <p id={`${id}-outgoing-help`}>Let apps use websites, APIs, downloads, and services on your local network. Replies to these connections are allowed.</p>
+              <p id={`${id}-outgoing-help`}>Let apps use websites, APIs, and downloads on the public internet. Without GPU acceleration, they cannot reach your computer or your local network. Replies to these connections are allowed.</p>
             </div><Switch id={`${id}-outgoing`} aria-describedby={`${id}-outgoing-help`} disabled={disabled} checked={value.outgoing} onCheckedChange={outgoing => change({ outgoing, ...(outgoing ? { online: false } : {}) })} /></div>
           </div>
           <div className="creation-network-option">

@@ -293,6 +293,7 @@
     "src/components/sandbox-vm/host-access-requests.test.tsx",
     "src/components/sandbox-vm/host-access-requests.tsx",
     "src/components/sandbox-vm/image-picker.tsx",
+    "src/components/sandbox-vm/network-options-form.test.tsx",
     "src/components/sandbox-vm/network-options-form.tsx",
     "src/components/sandbox-vm/network-options.test.ts",
     "src/components/sandbox-vm/network-options.ts",

@@ -13,7 +13,9 @@
 //!   interrupted atomic writes are removed, staging layouts migrate, every publication
 //!   record is checked and quarantined if it fails, committed-but-unpublished objects and
 //!   interrupted staging are kept for a retried import to resume from verified data, or
-//!   collected after the grace period. [`RecoveryReport`] records what this open found.
+//!   collected after the grace period. [`RecoveryReport`] records what this open found. All
+//!   of it runs under the root's exclusive lock: a root another engine holds is refused
+//!   ([`OpenRefusal::InUse`]) and left untouched.
 //! - **Quotas.** Each configured scope gets its budget; a scope without one stores
 //!   nothing, and an import over budget is refused with the catalog's typed
 //!   `QuotaRefusal`. Nothing is evicted to make room.

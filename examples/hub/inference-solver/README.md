@@ -1,16 +1,18 @@
 # Inference Solver — preview
 
-A separate Yougori Hub template. My API is unchanged. The website has three main pages,
-harnesses, models and sandboxes, followed by personal API keys, usage, and administrator
-controls. The administrator chooses which main page people open first and which harnesses
-are offered.
+A separate Yougori Hub template. My API is unchanged. The main page shows harnesses, models
+and sandboxes side by side, followed by usage and administrator controls; personal API keys
+are a dropdown beside the main page's title. The administrator chooses which of the three
+comes first and which harnesses are offered. Sandboxes join the page only when a computer
+offers them, or someone already has one.
 Visitors can browse harnesses and models immediately. Sign-in is only needed for
 personal keys, usage, administrator controls, and access to inference. The public
 catalog excludes saved server addresses, connection names, and credentials.
 The design uses elements of prompx.com: a pale blue page, light Hanken Grotesk,
 two-tone headings, pill buttons ending in an arrow circle, light blue highlights, flat
-square panels and light/dark themes. Tools show in four columns; their installation
-instructions open inline on the catalog, without popups. Models have their own
+square panels and light/dark themes. The Harnesses column holds one card, Yougori, which
+holds every harness: its page shows the one command that starts them and lists each harness
+with what it asks, and each harness keeps its own page, without popups. Models have their own
 pages and can be filtered as censored or uncensored: detected
 from the model name, and an administrator can set the label on the model's page.
 Hanken Grotesk (SIL Open Font License) is bundled in `site/fonts`.
@@ -38,17 +40,30 @@ Admin is one column of sections, each with its name and one line on the left and
 controls on the right: **Local GPUs**, **Rent a cloud GPU**, **Model servers**, **Sandboxes**,
 **Main page and harnesses**, **Website identity**, **People**, **Model pricing**, **Media pricing
 and storage**, **Crypto payments** and **Compute activity**. Nothing is folded away: optional
-settings are tick boxes, or a mode, that switch their fields on. Local GPUs leads with every
+settings are tick boxes, or a mode, that switch their fields on. Local GPUs starts with the
+models computers run for the website (Hugging Face repositories, at most 20): each computer that
+connects chooses 1 to 3 of them, Yougori installs them there, and each loads on its GPU while it
+is used and unloads after 5 minutes without requests. A computer's model joins the catalog only
+while it is on this list; with none listed, computers can lend only Sandbox VMs. Each listed
+model shows how many connected computers run it now. Adding a model checks it first
+(`model_check.py`, the engine's own rules): public, an architecture Yougori's runtimes serve (the
+engine's Transformers and vLLM lists), no repository code, not a model that ships its own
+megakernel program (its base model is named instead when Yougori runs that), with the GPU memory
+it needs (weights x 1.2 + 2 GB, as the engine estimates) and the GPU generation its number
+formats need (bf16 Ampere, FP8 Ada, FP4 Blackwell). The model's row says so, with how many
+connected computers have a GPU for it; `yougori inference connect` marks the models this
+computer's GPU cannot run, and Rent a cloud GPU marks the GPUs that cannot run the model typed. Then comes every
 command a GPU computer runs, in order, each with its own Copy button: install or update Yougori
 (yougori.com's install command for Windows or Linux, which also starts it), `yougori app start`
 (the connector needs Yougori running and never starts it) and `yougori inference connect URL`.
-**Copy all** copies them as one message to send someone, and **Post on X** opens X with a short
-post (where to get Yougori, the start and connect commands) ready to send. It approves the code a connecting computer shows in place (an administrator who opens
+**Copy all for Windows** and **Copy all for Linux** copy only the commands, with only that
+system's install command, and **Post on X** opens X with one post for both: each install command
+under its system's name, then the start and connect commands under "Both:", ready to send. **Ask each computer for its code** (on by default): unticked, a computer that runs the commands joins at once, without a code, and serves only the listed models (it sees the requests it serves); the code box and the contributor password are then hidden. It approves the code a connecting computer shows in place (an administrator who opens
 `#contribute` lands there). On desktop the left edge is a
 camera-style ruler, as in the PrompX harness: tick lines, a mark per section and a thumb; drag it
 to scroll, click a mark to jump, hover for names. It replaces the page's scrollbar. Without Yougori on the website's server (every hosted
-inference), the website server's own controls are not shown and Rent a cloud GPU points to the
-Yougori app. With it, Admin uses Yougori on the website's server, never an engine on a
+inference), the website server's own controls are not shown and Rent a cloud GPU rents directly
+(below). With it, Admin uses Yougori on the website's server, never an engine on a
 visitor's computer. Existing
 local models are discovered automatically; selecting **Add to inference** obtains
 their connection internally. **Load and connect model** starts a selected Hugging
@@ -75,11 +90,18 @@ created here; stopping can leave storage charges. Ambiguous purchases are not
 retried, and interrupted operations stay visible for inspection.
 
 Optional contributors run `yougori inference connect URL`, which starts Yougori if needed
-(CLI 1.2.2 and older need `yougori app start` first), choose the models to share
-from a checklist (or, without models, lend Sandbox VMs or run a model first), and enter a
+(CLI 1.2.2 and older need `yougori app start` first), reads the website's list of models for
+computers (`GET /api/compute/models`: the administrator's list and `most`, 3) and asks what the
+computer does: run models on its GPU, run Sandbox VMs on the PC, or both. A computer running
+models chooses 1 to 3 of the listed ones; Yougori installs the ones it lacks (each loads on the
+GPU while it is used and unloads after 5 minutes without requests) and reuses a model the
+computer already has. Without a listed model, a computer can lend only Sandbox VMs. The next
+`connect` offers to continue with the same choices or change them; a model dropped is deleted
+from the computer if Yougori installed it for the website. Scripts give `--models REPO,REPO
+--sandbox none|CPU,GB,VMS`, or reuse the last choices. The first time, the contributor enters a
 short computer code on `/#contribute`. The CLI passes the answers to the connector
-(`compute_node.py --models IDS --sandbox none|CPU,GB,VMS`, after `--list`); piped, the
-connector asks the same in plain lines. An admin approves
+(`compute_node.py --models ENVIRONMENTS --sandbox none|CPU,GB,VMS --release ENVIRONMENTS`); on
+Ctrl+C the connector stops the models it ran only for the website. An admin approves
 it, or a signed-in member supplies the optional contributor password. Contributors
 cannot rent servers or receive host-management commands. Their connector makes outbound
 HTTPS requests, relays inference only to their selected Yougori loopback APIs, and
@@ -101,11 +123,25 @@ the client address the proxy reports, so one visitor cannot lock out the others 
 
 Harness VM images live outside the template releases, in the server's image folder: each
 release's `site/vm-images` links to it (or `SOLVER_VM_IMAGES` names it), so every hosted
-inference offers every published harness.
+inference offers every published harness. The Yougori harness's images are in its `yougori`
+folder: the base image in each variant, a pack per harness and the `image.json` that lists them
+(`scripts/build-vm-images.py yougori`). Each inference hands out only the packs of the harnesses
+it offers.
 
-Compute comes from the administrator's computers: `yougori inference connect URL` on each
-computer with a GPU, or on a Neocloud GPU rented from the Yougori app. Cloud rental from the
-hosted Admin panel stays unavailable, because no engine runs on the website's server.
+Compute comes from the administrator's computers (`yougori inference connect URL` on each
+computer with a GPU) and from GPUs the website rents itself. Rent a cloud GPU takes the
+administrator's own RunPod and Vast.ai API keys (checked against the provider, saved on the
+website's server, never shown again; `rentals.py`, `neocloud.py`), lists both providers' GPUs
+that are available now with their hourly prices, and rents one for a public Hugging Face text
+model after checking it: an architecture the pinned runtime serves (`vllm_architectures.json`,
+the engine's list for vLLM 0.29.0), no repository code, and weights that fit the GPU's memory and
+the disk. The GPU runs that runtime (its CUDA 12.9 build, by digest) and fetches its agent from
+the website with its own credential (`rental_agent.py`); the agent starts the model on the
+GPU's loopback and serves requests over outbound connections, as a connected computer does, so
+nothing listens on the GPU's public addresses. The model joins the catalog when it serves. A
+rental is made once per request and never retried; one whose model cannot start is deleted so
+it stops charging; one the provider ends leaves the catalog; **Stop and delete** ends the
+charges. Renting needs the website's public https address.
 `python -I -B tests/test_managed.py` checks the address, origin, cookie and attempt-limit rules.
 
 ## Website-created development instances
@@ -192,6 +228,18 @@ use Yougori's existing publication system, not managed Cloudflare for SaaS.
   30 seconds; a refused request (400) is tried on the other servers of that name, since
   they can differ in context length, and is the answer only when all of them refuse. Admin
   **Usage** shows requests per computer and the live routing.
+- A harness's tools are never dropped without a word. When all servers of a model refuse a
+  request that asks for a reply over 4,096 tokens, it is sent again with 4,096 and its tools,
+  unless Yougori's model server named another limit. Two refusals are not resent: a request
+  Yougori's model server refuses for its size (more tools, tool definitions, messages,
+  characters or bytes than it takes), and a conversation too long for the context. The
+  harness gets the refusal. A size refusal of a request with tools also says how many tool
+  definitions and bytes it sent. Any other refusal may mean that the model's server calls no
+  tools, so the request is sent once more as plain chat: no tools, earlier tool calls and
+  results written into the conversation as text, the model told that no tools are available
+  and that nothing it writes runs, and, on a contributed computer, the oldest turns dropped
+  when the chat outgrows the context. A chat with no user message goes with its instructions
+  as the user's message. A refusal reaches the harness in the model server's own words.
 - `/v1/models` and streaming/non-streaming `/v1/chat/completions`, including
   streamed tool-call deltas. The model server always streams to the relay; a caller who
   did not ask for a stream gets the completion assembled from it, so a long answer is cut
@@ -240,37 +288,48 @@ use Yougori's existing publication system, not managed Cloudflare for SaaS.
   and dark. Each style uses its palette's official colours, light and dark; `style.css` names
   the sources and the few colours moved just far enough for 4.5:1 text contrast.
 - Main page and harnesses: an administrator's first sign-in opens **Set up your inference**
-  instead of the main pages, with every harness ticked and Harnesses as the main page.
-  The same choices stay in Admin under **Main page and harnesses**. The main page leads the
-  menu and opens at the site's own address. A hidden harness leaves the pages, and its setup
-  ZIP, install script, VM image and code sign-in are refused; `/api/harnesses` still lists
-  it, unavailable with the reason, so `yougori inference run` explains it. Harnesses added
-  to the catalogue later are offered until the administrator hides them.
-- A catalog of 21 requested harnesses, with server-bound setup ZIPs for supported
-  clients. Each ZIP contains source, pinned tool versions and this website's
-  address; it contains no account credentials. See [the launcher](site/harnesses/README.md).
-- Run `yougori inference run HARNESS --server URL`. Yougori prepares and starts
-  the harness directly, manages a pinned private Python runtime on Windows, and
-  keeps host-side client code bundled in the CLI. Repeat the same command next
-  time; no separate solver command, remote install script, or PATH entry is needed.
-  `yougori inference install HARNESS --server URL` prepares its VM image only.
-  Current published VM/tool artifacts are still required for catalog availability.
+  instead of the main page, with every harness ticked and Harnesses first. The same choices
+  stay in Admin under **Main page and harnesses**. The chosen column comes first on the main
+  page, which opens at the site's own address. Yougori has no box of its own: it is offered
+  while any harness inside it is. A hidden harness leaves the pages, and its setup ZIP,
+  install script, VM image and code sign-in are refused; `/api/harnesses` still lists it,
+  unavailable with the reason, so `yougori inference run` explains it. Harnesses added to the
+  catalogue later are offered until the administrator hides them.
+- Yougori, our own harness (the Rust crate `harness/`), holds its own agent and all 21
+  harnesses: the coding harnesses' real engines behind its screen, and the five security
+  harnesses' own terminal clients in a pane of that screen. Each harness also has a
+  server-bound setup ZIP with source, pinned tool versions and this website's address; it
+  contains no account credentials. See [the launcher](site/harnesses/README.md).
+- Run `yougori inference run --server URL` (the website shows it with `yougori` as the
+  harness). It asks which harness, which model, that harness's own questions (a security
+  harness: what to test, permission, what is off limits, how far it may go, a test login, the
+  source code and a focus), the folder copied in, what the VM reaches (not for a security
+  harness) and CPU and memory, then starts the harness inside the Yougori harness, in a Sandbox
+  VM from the Yougori images. Yougori manages a pinned private Python runtime on Windows and
+  keeps host-side client code bundled in the CLI. Repeat the same command next time; no
+  separate solver command, remote install script, or PATH entry is needed.
+  `yougori inference install HARNESS --server URL` prepares the images a run starts the
+  harness from: the Yougori base image and the harness's pack. A harness is available only when
+  its pack and base image are published.
 - First-use browser code sign-in: the CLI generates its credential, displays a
   short code, and resumes after the signed-in user approves the named harness.
   No manual API-key creation or copying. Codes expire after ten minutes, approval
   is single-use, credentials stay per-server/per-harness, and access can be revoked.
   This is a service-specific device flow inspired by
   [RFC 8628](https://www.rfc-editor.org/rfc/rfc8628), not a general OAuth server.
-- Harnesses are filtered with one **Category** dropdown of checkboxes; any number of
-  categories can be ticked, each marked with its own blue. Their labels and
-  colors live in `site/categories.json`; harness membership is in `harnesses.json`.
-  Cyber Coding groups the cybersecurity harnesses; model refusal behavior still
-  depends on the chosen model. Clicking a card opens inline installation instructions,
-  including its command, first-use sign-in, requirements and source download.
-- Blue terminal presentation and an enforced server-only network boundary.
-  Harnesses run in Yougori Sandbox VMs; an owner-only publication and host relay
-  forward only model API requests to this website. The real API key stays outside
-  the VM. Workspaces are staged copies and runtime external networking is absent.
+- Yougori's page groups the harnesses inside it by category, Coding then Cyber Coding, one
+  row each with what it asks and a Copy command button. Their labels and colors live in
+  `site/categories.json`; harness membership is in `harnesses.json`. Cyber Coding groups the
+  cybersecurity harnesses; model refusal behavior still depends on the chosen model. Each
+  harness's own page shows its command, what Yougori asks, first-use sign-in, requirements
+  and source download.
+- Blue terminal presentation and an enforced network boundary. Harnesses run in Yougori
+  Sandbox VMs; an owner-only publication and host relay forward only model API requests to
+  this website. The real API key stays outside the VM. Workspaces are staged copies. By
+  default the VM reaches only this website. A coding harness may also be given sites
+  (HTTPS through the launcher), targets (Yougori's filter holds the VM to those hosts) or the
+  public internet (never this computer or its network). A security harness reaches only its
+  target and this website.
 - Stateless Responses, Messages and Gemini text/function adapters reuse the
   Chat Completions gateway's authorization, model scopes and usage accounting.
   Their SSE output is buffered until completion; it is not native token streaming.

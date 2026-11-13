@@ -1,0 +1,35 @@
+---
+source: src/ui/tests.rs
+expression: wide
+---
+
+  ▀▄ ▄▀ ▄▀▀▄ █  █ ▄▀▀▀ ▄▀▀▄ █▀▀▄ ▀█▀
+    █   █  █ █  █ █ ▀█ █  █ █▀█   █     OpenCode  v1.0.0
+    ▀    ▀▀   ▀▀   ▀▀▀  ▀▀  ▀  ▀ ▀▀▀    qwen3-coder-30b
+
+  ■ OpenCode could not start: opencode: command not found (exit code 127)
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+■  OpenCode could not start
+│  opencode: command not found (exit code 127)
+└  q quit · enter start again · ctrl+p model
+ ■ stopped · OpenCode · qwen3-coder-30b · reaches only the inference
+[no cursor]

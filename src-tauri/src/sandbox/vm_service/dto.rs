@@ -121,9 +121,15 @@ pub struct LaunchSpec {
     /// itself is scheduled by Windows and does not enforce a per-VM VRAM quota.
     #[serde(default)]
     pub gpu_memory: Vec<(crate::foundation::ids::GpuDeviceKey, u64)>,
-    /// Explicit outbound NAT; false keeps the adapter absent.
+    /// Explicit outbound NAT; false keeps the adapter absent. Every frame of the adapter
+    /// passes the host's network filter: the public internet only, or with `targets` those
+    /// alone.
     #[serde(default)]
     pub internet: bool,
+    /// With `internet`, the only destinations its adapter reaches (resolved on this computer
+    /// at launch); `None` is the public internet.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub targets: Option<Vec<crate::sandbox::backend::NetworkTarget>>,
     /// An owner session: a VM its owner launched for an attended session in their terminal (an
     /// inference harness). Its publications reach only the owner, with a release account of
     /// [`super::publish::OWNER_SESSION_RELEASE_BYTES`] instead of VM-D12's 8 MiB.

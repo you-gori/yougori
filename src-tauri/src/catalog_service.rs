@@ -13,6 +13,20 @@
 //! catalog lives, its budget and whether settings keys should replace the variables are the
 //! owner's decisions.
 //!
+//! A disposable acceptance engine (the `acceptance` build feature, scripts/acceptance/README.md)
+//! never uses [`CATALOG_ROOT_SETTING`], which it inherits from the owner's environment: its
+//! directory is [`ACCEPTANCE_ROOT_SETTING`], or [`DEFAULT_ROOT_FOLDER`] in its own data folder.
+//! It fails closed like the feature's other variables: a relative path, or a root of the
+//! installed engine's (the one [`CATALOG_ROOT_SETTING`] names, or anything in the installed
+//! engine's data folder, its default root included), opens no catalog, and nothing falls back
+//! to another root ([`Settings::for_acceptance`]). A test binary reads none of the catalog's
+//! variables ([`engine`]).
+//!
+//! One engine at a time owns a catalog root: the catalog's open takes the root's exclusive
+//! lock (`catalog.lock`, an operating-system file lock released when its process ends), and an
+//! engine that finds it held opens nothing there, changes nothing and says which root is in
+//! use and what to do ([`OpenRefusal::InUse`]).
+//!
 //! On open the catalog recovers what an interrupted run left, and registers its classes
 //! through the engine's trust-root service (`trust_roots.rs`): model files
 //! (`model_weights`) and their sidecars (`model_sidecar`) accept the owner's own originals;
@@ -58,11 +72,11 @@ mod model_files;
 mod tests;
 
 use std::collections::{BTreeMap, BTreeSet};
-use std::ffi::OsStr;
+use std::ffi::{OsStr, OsString};
 use std::fmt;
 use std::fs;
 use std::io;
-use std::path::{Path, PathBuf};
+use std::path::{Component, Path, PathBuf};
 use std::sync::{Arc, Mutex, MutexGuard, OnceLock, PoisonError};
 use std::time::Duration;
 
@@ -71,7 +85,8 @@ use serde_json::{json, Value};
 
 use crate::foundation::catalog::{ArtifactClass, Catalog, ObjectId, ReadRefusal, Scope};
 use crate::foundation::catalog_service::{
-    CatalogLocation, CatalogService, CatalogServiceConfig, OfferedClass, OpenRefusal, TrustApplied,
+    CatalogLocation, CatalogService, CatalogServiceConfig, LocationProblem, OfferedClass,
+    OpenRefusal, TrustApplied,
 };
 use crate::foundation::ids::{Clock, ContentKey, ExecutionId, SystemClock, TenantId};
 use crate::foundation::signing::{
@@ -109,6 +124,22 @@ pub(crate) const DEFAULT_ROOT_SETTING: &str =
 
 /// The environment variable giving each scope's space budget, in bytes.
 pub(crate) const CATALOG_QUOTA_SETTING: &str = "YOUGORI_CATALOG_QUOTA_BYTES";
+
+/// The environment variable naming a disposable acceptance engine's catalog directory (the
+/// `acceptance` build feature). Such an engine never uses [`CATALOG_ROOT_SETTING`]: it inherits
+/// the owner's environment, where that variable names the installed engine's catalog.
+pub(crate) const ACCEPTANCE_ROOT_SETTING: &str = "YOUGORI_ACCEPTANCE_CATALOG_ROOT";
+
+/// The setting name an acceptance engine's default root is reported under.
+pub(crate) const ACCEPTANCE_DEFAULT_ROOT_SETTING: &str =
+    "YOUGORI_ACCEPTANCE_CATALOG_ROOT (default: the acceptance data folder)";
+
+/// The variable this build takes the catalog directory from, as its remedies name it.
+pub(crate) const ROOT_SETTING: &str = if cfg!(feature = "acceptance") {
+    ACCEPTANCE_ROOT_SETTING
+} else {
+    CATALOG_ROOT_SETTING
+};
 
 /// The tenant the engine's owner imports into: their own model folders.
 pub(crate) const OWNER_TENANT: &str = "owner";
@@ -201,29 +232,132 @@ pub(crate) enum DefaultPolicy {
     TooLittleFree { free_bytes: u64 },
     /// The engine's data folder was not handed over, or its volume could not be read.
     NoDataFolder,
+    /// A disposable acceptance engine without a data folder of its own
+    /// (YOUGORI_ACCEPTANCE_DATA_DIR is unset): it has no default root.
+    NoAcceptanceDataFolder,
+    /// A disposable acceptance engine's root would be the installed engine's catalog, which it
+    /// never opens.
+    InstalledEngineRoot { root: PathBuf },
 }
 
 impl DefaultPolicy {
     fn view(&self) -> Value {
         match self {
             Self::Configured => {
-                json!({ "state": "configured", "detail": format!("{CATALOG_ROOT_SETTING} is set; the default root did not apply") })
+                json!({ "state": "configured", "detail": format!("{ROOT_SETTING} is set; the default root did not apply") })
             }
             Self::Off => {
-                json!({ "state": "off", "detail": format!("{CATALOG_ROOT_SETTING} is {CATALOG_OFF}: no catalog, by the owner's choice") })
+                json!({ "state": "off", "detail": format!("{ROOT_SETTING} is {CATALOG_OFF}: no catalog, by the owner's choice") })
             }
             Self::Taken { root, free_bytes } => {
                 json!({ "state": "default", "root": root.display().to_string(), "free_bytes": free_bytes,
-                "detail": format!("{CATALOG_ROOT_SETTING} is unset; the catalog lives under the engine's data folder with {DEFAULT_QUOTA_BYTES} bytes per scope unless {CATALOG_QUOTA_SETTING} says otherwise; set {CATALOG_ROOT_SETTING} to a directory, or to {CATALOG_OFF}, to change that") })
+                "detail": format!("{ROOT_SETTING} is unset; the catalog lives under the engine's data folder with {DEFAULT_QUOTA_BYTES} bytes per scope unless {CATALOG_QUOTA_SETTING} says otherwise; set {ROOT_SETTING} to a directory, or to {CATALOG_OFF}, to change that") })
             }
             Self::TooLittleFree { free_bytes } => {
                 json!({ "state": "declined", "free_bytes": free_bytes, "needed_bytes": DEFAULT_MIN_FREE_BYTES,
-                "detail": format!("{CATALOG_ROOT_SETTING} is unset and the data folder's volume has {free_bytes} bytes free, less than the {DEFAULT_MIN_FREE_BYTES} the default needs; set {CATALOG_ROOT_SETTING} to a directory on a drive with room") })
+                "detail": format!("{ROOT_SETTING} is unset and the data folder's volume has {free_bytes} bytes free, less than the {DEFAULT_MIN_FREE_BYTES} the default needs; set {ROOT_SETTING} to a directory on a drive with room") })
             }
             Self::NoDataFolder => {
                 json!({ "state": "declined", "detail": "the engine's data folder or its volume could not be read; set the root explicitly" })
             }
+            Self::NoAcceptanceDataFolder => {
+                json!({ "state": "declined", "detail": format!("this disposable acceptance engine has no data folder of its own (YOUGORI_ACCEPTANCE_DATA_DIR is unset), so it has no default root and never takes the installed engine's; set {ACCEPTANCE_ROOT_SETTING} to a folder of its own") })
+            }
+            Self::InstalledEngineRoot { root } => {
+                json!({ "state": "refused", "root": root.display().to_string(),
+                "detail": format!("{} is the installed engine's catalog, which this disposable acceptance engine never opens; set {ACCEPTANCE_ROOT_SETTING} to a folder of its own", root.display()) })
+            }
         }
+    }
+}
+
+/// What a disposable acceptance engine knows of the installed engine on the same computer:
+/// where that engine's catalog is, so that it is never opened from here.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub(crate) struct InstalledEngine {
+    /// The installed engine's data folder. Its default root is [`DEFAULT_ROOT_FOLDER`] there,
+    /// and nothing in it is a disposable engine's.
+    pub data_folder: Option<PathBuf>,
+    /// The value of [`CATALOG_ROOT_SETTING`] in this engine's environment, inherited from the
+    /// owner's: the root the installed engine is configured with.
+    pub configured_root: Option<OsString>,
+}
+
+impl InstalledEngine {
+    /// Whether `path` is the installed engine's catalog: the root [`CATALOG_ROOT_SETTING`]
+    /// names, or anything in its data folder, its default root included. Paths are compared
+    /// by name (on Windows in any case, with either separator) and again with the links of
+    /// their existing part resolved, so another spelling of the same folder is caught too.
+    fn claims(&self, path: &Path) -> bool {
+        let configured = self
+            .configured_root
+            .as_deref()
+            .filter(|value| !value.is_empty() && !is_off(value))
+            .map(Path::new)
+            .filter(|root| root.is_absolute());
+        let data = self.data_folder.as_deref();
+        let claimed_in = |form: &dyn Fn(&Path) -> Option<PathBuf>| {
+            let Some(candidate) = form(path) else {
+                return false;
+            };
+            configured
+                .and_then(form)
+                .is_some_and(|root| root == candidate)
+                || data
+                    .and_then(form)
+                    .is_some_and(|folder| candidate.starts_with(folder))
+        };
+        claimed_in(&|path: &Path| Some(comparable(path))) || claimed_in(&resolved)
+    }
+}
+
+/// Whether `value` is [`CATALOG_OFF`].
+fn is_off(value: &OsStr) -> bool {
+    value
+        .to_string_lossy()
+        .trim()
+        .eq_ignore_ascii_case(CATALOG_OFF)
+}
+
+/// `path` with `.` and `..` resolved by name; on Windows also without a verbatim prefix, with
+/// one separator and in one case, as the file system compares names there.
+fn comparable(path: &Path) -> PathBuf {
+    #[cfg(windows)]
+    let path = &{
+        let text = path.as_os_str().to_string_lossy().replace('/', "\\");
+        let text = match text.strip_prefix(r"\\?\UNC\") {
+            Some(share) => format!(r"\\{share}"),
+            None => text.strip_prefix(r"\\?\").unwrap_or(&text).to_owned(),
+        };
+        PathBuf::from(text.to_lowercase())
+    };
+    let mut normal = PathBuf::new();
+    for component in path.components() {
+        match component {
+            Component::CurDir => {}
+            Component::ParentDir => {
+                normal.pop();
+            }
+            other => normal.push(other.as_os_str()),
+        }
+    }
+    normal
+}
+
+/// `path` as [`comparable`], with its longest existing part resolved by the system (links,
+/// junctions, short names); `None` when no part of it exists. Reads path metadata only.
+fn resolved(path: &Path) -> Option<PathBuf> {
+    let named = comparable(path);
+    let mut existing = named.as_path();
+    let mut rest = Vec::new();
+    loop {
+        if let Ok(canonical) = fs::canonicalize(existing) {
+            let mut full = canonical;
+            full.extend(rest.iter().rev());
+            return Some(comparable(&full));
+        }
+        rest.push(existing.file_name()?);
+        existing = existing.parent()?;
     }
 }
 
@@ -249,12 +383,7 @@ impl Settings {
         free_bytes: Option<u64>,
     ) -> (Self, DefaultPolicy) {
         let explicit = root.filter(|value| !value.is_empty());
-        if explicit.is_some_and(|value| {
-            value
-                .to_string_lossy()
-                .trim()
-                .eq_ignore_ascii_case(CATALOG_OFF)
-        }) {
+        if explicit.is_some_and(is_off) {
             return (
                 Self {
                     location: CatalogLocation::from_setting(CATALOG_ROOT_SETTING, None),
@@ -266,14 +395,103 @@ impl Settings {
         if explicit.is_some() {
             return (Self::from_values(root, quota), DefaultPolicy::Configured);
         }
+        Self::default_root(
+            (CATALOG_ROOT_SETTING, DEFAULT_ROOT_SETTING),
+            quota,
+            data_folder,
+            free_bytes,
+        )
+    }
+
+    /// A disposable acceptance engine's settings (the `acceptance` build feature). It never
+    /// uses [`CATALOG_ROOT_SETTING`], which it inherits from the owner's environment: `root`,
+    /// the value of [`ACCEPTANCE_ROOT_SETTING`], is its directory when given ([`CATALOG_OFF`]
+    /// turns the catalog off), and otherwise [`DEFAULT_ROOT_FOLDER`] in `data_folder`, its own
+    /// data folder (YOUGORI_ACCEPTANCE_DATA_DIR), under the installed engine's default policy:
+    /// room on its volume, and [`DEFAULT_QUOTA_BYTES`] per scope unless `quota` says otherwise.
+    ///
+    /// It fails closed, like the feature's other variables: a relative path, no data folder
+    /// of its own, or a root of the `installed` engine's ([`InstalledEngine::claims`]) leaves
+    /// the catalog unopened with the reason in the status, and nothing falls back to another
+    /// root. Only path metadata is read, to see through links.
+    pub(crate) fn for_acceptance(
+        root: Option<&OsStr>,
+        quota: Option<&OsStr>,
+        data_folder: Option<&Path>,
+        free_bytes: Option<u64>,
+        installed: &InstalledEngine,
+    ) -> (Self, DefaultPolicy) {
+        let unset = |policy| {
+            (
+                Self {
+                    location: CatalogLocation::from_setting(ACCEPTANCE_ROOT_SETTING, None),
+                    quota: QuotaSetting::from_setting(quota),
+                },
+                policy,
+            )
+        };
+        let (settings, policy) = match root.filter(|value| !value.is_empty()) {
+            Some(value) if is_off(value) => return unset(DefaultPolicy::Off),
+            Some(value) => (
+                Self {
+                    location: CatalogLocation::from_setting(ACCEPTANCE_ROOT_SETTING, Some(value)),
+                    quota: QuotaSetting::from_setting(quota),
+                },
+                DefaultPolicy::Configured,
+            ),
+            None if data_folder.is_none() => return unset(DefaultPolicy::NoAcceptanceDataFolder),
+            None => Self::default_root(
+                (ACCEPTANCE_ROOT_SETTING, ACCEPTANCE_DEFAULT_ROOT_SETTING),
+                quota,
+                data_folder,
+                free_bytes,
+            ),
+        };
+        match settings.location {
+            CatalogLocation::Directory { path, .. } if installed.claims(&path) => (
+                Self {
+                    location: CatalogLocation::Invalid {
+                        setting: ACCEPTANCE_ROOT_SETTING,
+                        problem: LocationProblem::InstalledEngine { root: path.clone() },
+                    },
+                    quota: settings.quota,
+                },
+                DefaultPolicy::InstalledEngineRoot { root: path },
+            ),
+            location => (
+                Self {
+                    location,
+                    quota: settings.quota,
+                },
+                policy,
+            ),
+        }
+    }
+
+    /// [`DEFAULT_ROOT_FOLDER`] in `data_folder` when `free_bytes` (its volume's free space) is
+    /// at least [`DEFAULT_MIN_FREE_BYTES`], reported under the second of `settings`, with
+    /// [`DEFAULT_QUOTA_BYTES`] per scope unless `quota` says otherwise; declined, it is not
+    /// configured under the first.
+    fn default_root(
+        (setting, default_setting): (&'static str, &'static str),
+        quota: Option<&OsStr>,
+        data_folder: Option<&Path>,
+        free_bytes: Option<u64>,
+    ) -> (Self, DefaultPolicy) {
+        let declined = |policy| {
+            (
+                Self {
+                    location: CatalogLocation::from_setting(setting, None),
+                    quota: QuotaSetting::from_setting(quota),
+                },
+                policy,
+            )
+        };
         let (Some(data_folder), Some(free_bytes)) = (data_folder, free_bytes) else {
-            return (Self::from_values(None, quota), DefaultPolicy::NoDataFolder);
+            return declined(DefaultPolicy::NoDataFolder);
         };
         if free_bytes < DEFAULT_MIN_FREE_BYTES {
-            return (
-                Self::from_values(None, quota),
-                DefaultPolicy::TooLittleFree { free_bytes },
-            );
+            return declined(DefaultPolicy::TooLittleFree { free_bytes });
         }
         let path = data_folder.join(DEFAULT_ROOT_FOLDER);
         let quota = match QuotaSetting::from_setting(quota) {
@@ -282,10 +500,7 @@ impl Settings {
         };
         (
             Self {
-                location: CatalogLocation::from_setting(
-                    DEFAULT_ROOT_SETTING,
-                    Some(path.as_os_str()),
-                ),
+                location: CatalogLocation::from_setting(default_setting, Some(path.as_os_str())),
                 quota,
             },
             DefaultPolicy::Taken {
@@ -300,13 +515,21 @@ impl Settings {
 /// catalog root lives.
 static DATA_FOLDER: OnceLock<PathBuf> = OnceLock::new();
 
+/// The installed engine's data folder, handed over at start-up ([`use_data_folder`]): where a
+/// disposable acceptance engine's catalog never is.
+static INSTALLED_DATA_FOLDER: OnceLock<PathBuf> = OnceLock::new();
+
 /// The default policy the engine's catalog was opened with, for the status.
 static POLICY: OnceLock<DefaultPolicy> = OnceLock::new();
 
-/// Hands the catalog the engine's data folder before the catalog opens; only the first call
-/// counts.
-pub(crate) fn use_data_folder(app_directory: &Path) {
+/// Hands the catalog, before it opens, the engine's data folder, where its default root lives,
+/// and the installed engine's data folder: the same one, except in a disposable acceptance
+/// engine, which never opens a catalog there. Only the first call counts.
+pub(crate) fn use_data_folder(app_directory: &Path, installed_directory: Option<&Path>) {
     let _ = DATA_FOLDER.set(app_directory.to_path_buf());
+    if let Some(installed) = installed_directory {
+        let _ = INSTALLED_DATA_FOLDER.set(installed.to_path_buf());
+    }
 }
 
 /// The free bytes of the volume holding `path`: the longest mount point that is a prefix of
@@ -502,19 +725,65 @@ static ENGINE_VIEWS: ViewRegistry = ViewRegistry::new();
 /// A registry nothing holds a model in, for callers that show a catalog without views.
 static NO_VIEWS: ViewRegistry = ViewRegistry::new();
 
+/// The value of the engine's environment variable `name`. A test binary reads none of the
+/// catalog's: it inherits the owner's environment, YOUGORI_CATALOG_ROOT included, and a test
+/// never opens the owner's catalog.
+fn engine_variable(name: &str) -> Option<OsString> {
+    if cfg!(test) {
+        None
+    } else {
+        std::env::var_os(name)
+    }
+}
+
+/// The engine's catalog settings from its variables, read through `variable`, and the data
+/// folders handed over ([`use_data_folder`]): a disposable acceptance engine's in an acceptance
+/// build ([`Settings::for_acceptance`]), the installed engine's otherwise
+/// ([`Settings::with_defaults`], under `data_folder`). `free_bytes` is the data folder's volume's
+/// free space.
+///
+/// A disposable engine's own data folder is the one handed over (YOUGORI_ACCEPTANCE_DATA_DIR)
+/// unless that is the installed engine's, as it is when that variable is unset.
+fn engine_settings(
+    variable: impl Fn(&str) -> Option<OsString>,
+    data_folder: Option<&Path>,
+    free_bytes: Option<u64>,
+) -> (Settings, DefaultPolicy) {
+    let quota = variable(CATALOG_QUOTA_SETTING);
+    if cfg!(feature = "acceptance") {
+        let installed = InstalledEngine {
+            data_folder: INSTALLED_DATA_FOLDER.get().cloned(),
+            configured_root: variable(CATALOG_ROOT_SETTING),
+        };
+        let own_data_folder =
+            data_folder.filter(|folder| installed.data_folder.as_deref() != Some(*folder));
+        Settings::for_acceptance(
+            variable(ACCEPTANCE_ROOT_SETTING).as_deref(),
+            quota.as_deref(),
+            own_data_folder,
+            free_bytes,
+            &installed,
+        )
+    } else {
+        Settings::with_defaults(
+            variable(CATALOG_ROOT_SETTING).as_deref(),
+            quota.as_deref(),
+            data_folder,
+            free_bytes,
+        )
+    }
+}
+
 /// The engine's one catalog, opened on first use with the trust-root service's roots and
 /// published under that service's lock ([`publish`]); on open, every view whose execution
-/// holds no live lease is removed ([`open_with_views`]).
+/// holds no live lease is removed ([`open_with_views`]). Its root is where the engine's
+/// variables put it ([`engine_settings`]); another engine that holds that root leaves this
+/// one without a catalog, refused with [`OpenRefusal::InUse`].
 pub(crate) fn engine() -> &'static EngineCatalog {
     publish(&CATALOG, crate::trust_roots::service_lock(), |trust| {
         let data_folder = DATA_FOLDER.get().map(PathBuf::as_path);
         let free = data_folder.and_then(free_bytes_of);
-        let (settings, policy) = Settings::with_defaults(
-            std::env::var_os(CATALOG_ROOT_SETTING).as_deref(),
-            std::env::var_os(CATALOG_QUOTA_SETTING).as_deref(),
-            data_folder,
-            free,
-        );
+        let (settings, policy) = engine_settings(engine_variable, data_folder, free);
         let _ = POLICY.set(policy);
         // No sweep here: the engine restores the views of its running environments first
         // (`restore_views`, from the scheduler's start) and sweeps the rest then.
@@ -603,12 +872,44 @@ fn encoded(value: impl serde::Serialize) -> Result<Value, String> {
     serde_json::to_value(value).map_err(|error| error.to_string())
 }
 
-/// Why the catalog is not open, for refusals.
+/// Why the catalog is not open, for refusals; for a root another engine holds, also what to
+/// do about it.
 pub(crate) fn not_open_detail(catalog: &EngineCatalog) -> String {
     match catalog {
         EngineCatalog::NotOpened { location, .. } => location.remedy().unwrap_or_default(),
+        EngineCatalog::Refused {
+            root,
+            refusal: refusal @ OpenRefusal::InUse { .. },
+            ..
+        } => refused_remedy(root, refusal),
         EngineCatalog::Refused { refusal, .. } => refusal.to_string(),
         EngineCatalog::Open { .. } => String::new(),
+    }
+}
+
+/// What the owner does about the catalog `refusal` kept this engine from opening at `root`.
+fn refused_remedy(root: &Path, refusal: &OpenRefusal) -> String {
+    match refusal {
+        OpenRefusal::InUse { .. } => format!(
+            "The catalog at {} is in use by another Yougori engine, so this engine left it \
+             untouched and runs without a catalog. Quit the engine that uses it, or set \
+             {ROOT_SETTING} to a folder of this engine's own, then restart this engine.",
+            root.display()
+        ),
+        _ => format!(
+            "The catalog could not be opened at {}: {refusal}. Make the directory writable, or \
+             set {ROOT_SETTING} to another one, and restart the engine.",
+            root.display()
+        ),
+    }
+}
+
+/// The setting `location` was configured under.
+fn location_setting(location: &CatalogLocation) -> &'static str {
+    match location {
+        CatalogLocation::NotConfigured { setting }
+        | CatalogLocation::Invalid { setting, .. }
+        | CatalogLocation::Directory { setting, .. } => setting,
     }
 }
 
@@ -633,7 +934,7 @@ pub(crate) fn status(catalog: &EngineCatalog) -> Result<Value, String> {
     match catalog {
         EngineCatalog::NotOpened { location, quota } => Ok(json!({
             "state": "not_opened",
-            "setting": CATALOG_ROOT_SETTING,
+            "setting": location_setting(location),
             "remedy": location.remedy(),
             "quota": quota.view(),
         })),
@@ -645,12 +946,7 @@ pub(crate) fn status(catalog: &EngineCatalog) -> Result<Value, String> {
             "state": "refused",
             "root": root.display().to_string(),
             "refusal": encoded(refusal)?,
-            "remedy": format!(
-                "The catalog could not be opened at {}: {refusal}. Make the directory \
-                 writable, or set {CATALOG_ROOT_SETTING} to another one, and restart the \
-                 engine.",
-                root.display()
-            ),
+            "remedy": refused_remedy(root, refusal),
             "quota": quota.view(),
         })),
         EngineCatalog::Open { service, quota, .. } => {

@@ -29,6 +29,10 @@
 //!    error is `StartFailure::HardwareVirtualization` with QEMU's own text (VM-W22),
 //!    anything else a process failure with the text ([`classify_early_exit`]). Nothing is
 //!    retried, and there is no emulated alternative.
+//! 6. For a profile with a network card, the host connects its network filter
+//!    ([`NetworkFilter`]) to the four sockets QEMU serves, each checked to be served by
+//!    QEMU's own process; a filter that does not start ends the launch. Until it runs, and
+//!    after it ends, the card's frames reach nothing.
 //!
 //! Every failure after step 2 ends what started (the host's proof within a bounded kill,
 //! or, without it, closing the job, which kills what is left) and removes the private
@@ -61,6 +65,7 @@ use windows_sys::Win32::System::SystemInformation::{
 use super::bootstrap::{encode_bootstrap, write_bootstrap_file};
 use super::early_exit::log_tail;
 use super::host_map::{classify_early_exit, observed_state, start_restrictions};
+use super::network_filter::{NetworkFilter, Reach};
 use super::private_dir::{
     create_private_directory, remove_private_directory, restrict_bootstrap_file, HostSids,
     STDERR_LOG_NAME,
@@ -142,6 +147,8 @@ struct HeldQemu {
     directory: PathBuf,
     desktop: String,
     qmp_after: Duration,
+    /// The filter of its network card's frames, for a profile with a card.
+    network: Option<NetworkFilter>,
 }
 
 /// The Windows `QemuHost` (see the module notes).
@@ -371,6 +378,22 @@ impl WindowsQemuHost {
         if let Err(failure) = self.await_qmp(&process, control.qmp_socket(), &log_path) {
             return Err(self.discard(process, &directory, failure));
         }
+        let qmp_after = started.elapsed();
+        // A card's frames pass the host's filter or nowhere: a filter that cannot start
+        // ends the launch.
+        let network = match Reach::of(plan) {
+            Some(reach) => {
+                match NetworkFilter::start(&reach, control.network_sockets(), process.identity().pid) {
+                    Ok(filter) => Some(filter),
+                    Err(detail) => {
+                        let failure =
+                            prepare(format!("the VM's network filter could not start: {detail}"));
+                        return Err(self.discard(process, &directory, failure));
+                    }
+                }
+            }
+            None => None,
+        };
         let identity = process.identity();
         self.held.insert(
             identity,
@@ -379,7 +402,8 @@ impl WindowsQemuHost {
                 started: observation,
                 directory,
                 desktop: desktop_name,
-                qmp_after: started.elapsed(),
+                qmp_after,
+                network,
             },
         );
         self.secrets.insert(identity, secret);
@@ -678,6 +702,7 @@ impl QemuHost for WindowsQemuHost {
         self.secrets.remove(process);
         if let Some(held) = self.held.remove(process) {
             drop(held.process);
+            drop(held.network);
             if let Err(error) = remove_private_directory(&held.directory) {
                 self.cleanup_failures.push(CleanupFailure {
                     process: Some(*process),
@@ -743,6 +768,7 @@ impl Drop for WindowsQemuHost {
         for (_, held) in std::mem::take(&mut self.held) {
             let _ended = held.process.terminate(at_once);
             drop(held.process);
+            drop(held.network);
             let _removed = remove_private_directory(&held.directory);
         }
     }

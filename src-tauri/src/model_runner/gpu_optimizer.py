@@ -122,7 +122,8 @@ def gpu_snapshot(refresh=True):
                 "waitingSince": GPU_WAITING_SINCE,
                 "idleSeconds": int(now - GPU_LAST_USED), "idleTimeoutSeconds": GPU_IDLE_SECONDS,
                 "allocatedBytes": memory, "reservedBytes": reserved, "peakAllocatedBytes": peak,
-                "capacityBytes": GPU_CAPACITY, "capacityContext": GPU_CAPACITY_CONTEXT}
+                "capacityBytes": GPU_CAPACITY, "capacityContext": GPU_CAPACITY_CONTEXT,
+                "endsParkedWhileWaiting": True}
 
 
 def gpu_capacity_stamp():
@@ -364,14 +365,19 @@ def gpu_release_memory():
     process = ENGINE_PROCESS
     STATE.pop("parked", None)
     if process is not None:
-        if process.poll() is None:
-            process.terminate()
-            try:
-                process.wait(timeout=10)
-            except subprocess.TimeoutExpired:
-                process.kill()
-                process.wait(timeout=5)
-        ENGINE_PROCESS = None
+        ENGINE_PROCESS = None  # first, as end_engine does: its watcher must not report a crash
+        try:
+            if process.poll() is None:
+                process.terminate()
+                try:
+                    process.wait(timeout=10)
+                except subprocess.TimeoutExpired:
+                    process.kill()
+                    process.wait(timeout=5)
+        except BaseException:
+            if process.poll() is None:
+                ENGINE_PROCESS = process
+            raise
     # The next launch reports what it serves; until then the queue admits one request.
     queue = globals().get("INFERENCE_QUEUE")
     if queue is not None:
@@ -412,7 +418,12 @@ def gpu_unload():
     global GPU_LAST_USED, GPU_RELEASE_UNCERTAIN, GPU_GRANT_TERMS
     with GPU_LOCK:
         snapshot = gpu_snapshot()
-        if not GPU_ENABLED or GPU_PINNED or GPU_LOADING or GPU_ACTIVE or snapshot["pending"] or not GENERATION.acquire(blocking=False):
+        # A parked vLLM's leftover can keep the model first in line refused: its engine ends even
+        # while its own requests wait (endsParkedWhileWaiting), and they keep their place.
+        waiting = bool(snapshot["pending"])
+        if waiting and not (STATE.get("parked") == "sleep" and not snapshot["resident"]):
+            return False
+        if not GPU_ENABLED or GPU_PINNED or GPU_LOADING or GPU_ACTIVE or not GENERATION.acquire(blocking=False):
             return False
         try:
             STATE["status"] = "unloading"
@@ -423,7 +434,7 @@ def gpu_unload():
                 gpu_release_memory()
             GPU_LAST_USED = time.monotonic()
             GPU_RELEASE_UNCERTAIN = False
-            STATE.update(status="idle", error=None)
+            STATE.update(status="queued" if waiting else "idle", error=None)
             GPU_GRANTED.clear()
             GPU_GRANT_TERMS = None
             gpu_publish()

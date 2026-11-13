@@ -1,0 +1,56 @@
+// A tour of the screen without a model: cargo run -- --script tests/scripts/tour.jsonl
+// The first turn plays at once; each prompt plays the next. Every event type appears.
+{"type":"ready","harness":"yougori","name":"Yougori","model":"qwen3-coder-30b","models":["qwen3-coder-30b","gemma-4-26B-A4B-it","gpt-oss-20b"],"model_switch":"live","session":"tour-1","info":"Our own agent · 12 tools · build mode"}
+{"type":"modes","current":"build","available":[{"id":"build","name":"Build","description":"Changes files and runs commands"},{"id":"plan","name":"Plan","description":"Reads and plans, changes nothing"}]}
+{"type":"commands","commands":[{"name":"new","description":"Start a new session"},{"name":"sessions","description":"Open an earlier session"},{"name":"compact","description":"Summarise the conversation to free context"},{"name":"review","description":"Review the changes so far","hint":"what to look at"}]}
+{"type":"usage","context_tokens":1800,"context_window":32768}
+{"type":"notice","level":"info","text":"Read AGENTS.md from the workspace."}
+{"type":"turn"}
+{"type":"reasoning","message":"r1","text":"The test fails on empty input, so the parser probably unwraps "}
+{"type":"reasoning","message":"r1","text":"the first token. I should read it before changing anything."}
+{"type":"message","message":"m1","text":"I'll read the parser, then run its tests."}
+{"type":"plan","entries":[{"content":"Read the parser","status":"in_progress","priority":"high"},{"content":"Fix the early return on empty input","status":"pending"},{"content":"Run the parser tests","status":"pending"},{"content":"Summarise the change","status":"pending","priority":"low"}]}
+{"type":"tool_call","id":"t1","title":"src/parser.rs","kind":"read","status":"in_progress","locations":[{"path":"src/parser.rs","line":1}]}
+{"type":"tool_update","id":"t1","status":"completed","content":[{"type":"text","text":"pub fn parse(input: &str) -> Option<Ast> {\n    let first = tokens(input).next().unwrap();\n    Some(Ast::new(first))\n}"}]}
+{"type":"tool_call","id":"t2","title":"cargo test parser","kind":"execute","status":"in_progress","content":[{"type":"terminal","command":"cargo test parser","output":"   Compiling tour v0.1.0\n    Finished test profile\n     Running unittests src/lib.rs\n"}]}
+{"type":"tool_update","id":"t2","status":"failed","content":[{"type":"terminal","command":"cargo test parser","output":"   Compiling tour v0.1.0\n    Finished test profile\n     Running unittests src/lib.rs\nrunning 3 tests\ntest parser::parses_words ... ok\ntest parser::parses_numbers ... ok\ntest parser::empty_input ... FAILED\n\nfailures:\n    parser::empty_input: called `Option::unwrap()` on a `None` value\n\ntest result: FAILED. 2 passed; 1 failed","exit_code":101}]}
+{"type":"plan","entries":[{"content":"Read the parser","status":"completed","priority":"high"},{"content":"Fix the early return on empty input","status":"in_progress"},{"content":"Run the parser tests","status":"pending"},{"content":"Summarise the change","status":"pending","priority":"low"}]}
+{"type":"tool_call","id":"t3","title":"Edit src/parser.rs","kind":"edit","status":"pending","content":[{"type":"diff","path":"src/parser.rs","old":"pub fn parse(input: &str) -> Option<Ast> {\n    let first = tokens(input).next().unwrap();\n    Some(Ast::new(first))\n}\n","new":"pub fn parse(input: &str) -> Option<Ast> {\n    let first = tokens(input).next()?;\n    Some(Ast::new(first))\n}\n"}]}
+{"type":"permission","id":"p1","tool_call":"t3","title":"Edit src/parser.rs","detail":"Replace the unwrap on the first token with an early return.","options":[{"id":"allow_once","label":"Allow once","kind":"allow_once"},{"id":"allow_always","label":"Always allow edits","kind":"allow_always"},{"id":"reject_once","label":"Reject","kind":"reject_once"},{"id":"reject_always","label":"Always reject edits","kind":"reject_always"}]}
+{"type":"tool_update","id":"t3","status":"in_progress"}
+{"type":"tool_update","id":"t3","status":"completed"}
+{"type":"tool_call","id":"t4","title":"Create tests/parser_empty.rs","kind":"edit","status":"completed","content":[{"type":"diff","path":"tests/parser_empty.rs","new":"use tour::parse;\n\n#[test]\nfn empty_input_is_none() {\n    assert!(parse(\"\").is_none());\n}\n"}]}
+{"type":"tool_call","id":"t5","title":"cargo test parser","kind":"execute","status":"in_progress","content":[{"type":"terminal","command":"cargo test parser","output":"running 4 tests\n"}]}
+{"type":"tool_update","id":"t5","status":"completed","content":[{"type":"terminal","command":"cargo test parser","output":"running 4 tests\ntest parser::parses_words ... ok\ntest parser::parses_numbers ... ok\ntest parser::empty_input ... ok\ntest empty_input_is_none ... ok\n\ntest result: ok. 4 passed; 0 failed","exit_code":0}]}
+{"type":"plan","entries":[{"content":"Read the parser","status":"completed","priority":"high"},{"content":"Fix the early return on empty input","status":"completed"},{"content":"Run the parser tests","status":"completed"},{"content":"Summarise the change","status":"in_progress","priority":"low"}]}
+{"type":"message","message":"m2","text":"## Fixed\n\n`parse` now returns `None` for empty input instead of panicking:\n\n```rust\nlet first = tokens(input).next()?;\n```\n\n"}
+{"type":"message","message":"m2","text":"- **Cause**: `unwrap()` on the first token\n- **Fix**: an early return with `?`\n- **Test**: `tests/parser_empty.rs`\n\n| Test | Before | After |\n|---|---|---|\n| empty_input | failed | ok |\n| parses_words | ok | ok |\n\n> All four parser tests pass. See the [Rust book on `?`](https://doc.rust-lang.org/book/ch09-02-recoverable-errors-with-result.html)."}
+{"type":"usage","context_tokens":9400,"context_window":32768,"input_tokens":8700,"output_tokens":700}
+{"type":"plan","entries":[{"content":"Read the parser","status":"completed","priority":"high"},{"content":"Fix the early return on empty input","status":"completed"},{"content":"Run the parser tests","status":"completed"},{"content":"Summarise the change","status":"completed","priority":"low"}]}
+{"type":"turn_end","reason":"end_turn"}
+{"type":"turn"}
+{"type":"tool_call","id":"task1","title":"Find the other callers of parse()","kind":"task","status":"in_progress"}
+{"type":"tool_call","id":"c1","title":"parse\\(","kind":"search","status":"in_progress","parent":"task1"}
+{"type":"tool_update","id":"c1","status":"completed","content":[{"type":"text","text":"src/lib.rs:14\nsrc/cli.rs:42"}]}
+{"type":"reasoning","message":"r2","text":"Two callers. The CLI one prints the result.","parent":"task1"}
+{"type":"tool_call","id":"c2","title":"src/cli.rs","kind":"read","status":"completed","parent":"task1"}
+{"type":"message","message":"m3","text":"Found two callers: `src/lib.rs` and `src/cli.rs`. Both already handle `None`.","parent":"task1"}
+{"type":"tool_update","id":"task1","status":"completed","content":[{"type":"text","text":"Two callers, both handle None."}]}
+{"type":"question","id":"q1","question":"Should I add a test for each caller?","choices":["Yes, both","Only the CLI","No"],"allow_text":true}
+{"type":"message","message":"m4","text":"Adding the tests you asked for."}
+{"type":"progress","id":"suite","label":"Running the test suite","done":3,"total":12,"unit":"steps"}
+{"type":"progress","id":"suite","label":"Running the test suite","done":12,"total":12,"unit":"steps","finished":true}
+{"type":"model","model":"gemma-4-26B-A4B-it"}
+{"type":"turn_end","reason":"max_steps","detail":"Stopped after 40 steps. Send a message to let it go on."}
+{"type":"turn"}
+{"type":"user","text":"Also check the licenses of the dependencies."}
+{"type":"notice","level":"warn","text":"The VM reaches only the inference: web pages cannot be fetched."}
+{"type":"tool_call","id":"t6","title":"cargo metadata --format-version 1","kind":"execute","status":"completed","content":[{"type":"terminal","command":"cargo metadata --format-version 1","output":"14 packages","exit_code":0}]}
+{"type":"message","message":"m5","text":"Checked 14 crates: all are MIT or Apache-2.0. One file holds a token in plain text."}
+{"type":"finding","id":"f1","title":"Token in plain text in config.rs","severity":"medium","target":"src/config.rs:8","description":"A personal access token is committed in the source.","evidence":"const TOKEN: &str = \"ghp_example\";"}
+{"type":"report","title":"License check","path":"reports/licenses.md","summary":"14 crates, all MIT or Apache-2.0; one token to remove."}
+{"type":"notice","level":"error","text":"The README link check failed: the VM has no internet access."}
+{"type":"turn_end","reason":"error","detail":"The relay closed the stream."}
+{"type":"turn"}
+{"type":"message","message":"m6","text":"Ending the session here."}
+{"type":"exit","code":0,"message":"Session ended."}

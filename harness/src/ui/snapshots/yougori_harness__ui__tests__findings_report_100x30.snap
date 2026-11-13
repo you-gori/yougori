@@ -1,0 +1,35 @@
+---
+source: src/ui/tests.rs
+expression: wide
+---
+
+  ▀▄ ▄▀ ▄▀▀▄ █  █ ▄▀▀▀ ▄▀▀▄ █▀▀▄ ▀█▀
+    █   █  █ █  █ █ ▀█ █  █ █▀█   █     Strix  v1.0.0
+    ▀    ▀▀   ▀▀   ▀▀▀  ▀▀  ▀  ▀ ▀▀▀    unsloth/gemma-4-26B-A4B-it-GGUF
+
+  Strix is ready
+  Target  https://shop.example.test
+  Depth   Test safely
+
+› Start the assessment
+
+  ● Critical Admin panel reachable without login                     https://shop.example.test/admin
+             The dashboard answers 200 without a session.
+  ● High     SQL injection in the search                         https://shop.example.test/search?q=
+             A single quote changes the result count.
+  ● Medium   No rate limit on the login form                                                  /login
+  ● Low      Server version in the headers
+  ◇ Report saved  Assessment report  reports/strix-shop.md
+    4 findings; fix the admin panel first.
+
+
+
+
+
+
+  Findings  ● 1 critical  ● 1 high  ● 1 medium  ● 1 low
+╭──────────────────────────────────────────────────────────────────────────────────────────────────╮
+│ › Tell Strix what to test                                                                        │
+╰──────────────────────────────────────────────────────────────────────────────────────────────────╯
+ Strix · unsloth/gemma-4-26B-A4B-it-GGUF · reaches shop.example.test:443            ctrl+p commands
+[cursor 4,27]

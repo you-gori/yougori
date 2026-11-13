@@ -437,6 +437,8 @@ class MediaFlow(Flow):
         status, pair, _ = self.call("/api/compute/pair/start", {"credential_hash": hashlib.sha256(token.encode()).hexdigest(), "name": "Contributor", "role": "contributor"})
         self.assertEqual(status, 200, pair)
         self.assertEqual(self.call("/api/compute/pair/approve", {"code": pair["code"]}, self.admin)[0], 200)
+        # A contributing computer serves only the models the administrator lists for computers.
+        self.assertEqual(self.call("/api/admin/compute/models", {"models": ["test/draw"]}, self.admin)[0], 200)
         return token
 
     def agent(self, token, action, **data):

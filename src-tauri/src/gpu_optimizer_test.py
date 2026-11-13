@@ -247,6 +247,40 @@ class OptimizerTests(unittest.TestCase):
         model.GPU_LEASES["synthetic_lease_123"] = time.monotonic() - 1
         self.assertTrue(model.gpu_unload())
 
+    def test_a_parked_engine_ends_while_its_requests_wait_and_they_keep_their_place(self):
+        # A vLLM parked by sleep (vllm_park) whose own request waits: its engine holds part of the GPU.
+        process = Mock()
+        process.poll.return_value = None
+        process.wait.return_value = 0
+        model.ENGINE_PROCESS, model.NETWORK = process, None
+        model.STATE.update(status="idle", parked="sleep")
+        self.addCleanup(model.STATE.pop, "parked", None)
+        model.gpu_prepare("synthetic_lease_123")
+        since = model.GPU_WAITING_SINCE
+        self.assertTrue(model.gpu_snapshot()["endsParkedWhileWaiting"])
+        # Not while it serves a request or its release is in doubt.
+        for attribute in ("GPU_ACTIVE", "GPU_RELEASE_UNCERTAIN"):
+            setattr(model, attribute, 1)
+            self.assertFalse(model.gpu_unload())
+            setattr(model, attribute, 0)
+        process.terminate.assert_not_called()
+        with patch.object(model, "vllm_park", return_value=False, create=True):
+            result = model.gpu_control({"action": "unload"})
+        self.assertTrue(result["unloaded"])
+        self.assertNotIn("parked", result)
+        process.terminate.assert_called_once()
+        self.assertIsNone(model.ENGINE_PROCESS)
+        self.assertNotIn("parked", model.STATE)
+        # The request still waits, in its place in line, for the load that starts the engine again.
+        self.assertEqual(model.STATE["status"], "queued")
+        self.assertEqual(result["optimizer"]["pending"], 1)
+        self.assertFalse(result["optimizer"]["resident"])
+        self.assertEqual(model.GPU_WAITING_SINCE, since)
+        # A model that is not parked is never unloaded while its requests wait.
+        model.STATE["status"] = "ready"
+        model.NETWORK = object()
+        self.assertFalse(model.gpu_unload())
+
     def test_loading_requires_grant_and_preserves_quantized_identity(self):
         model.STATE.update(status="queued", precision="4bit")
         thread = threading.Thread(target=model.gpu_before_load)
@@ -449,6 +483,53 @@ class OptimizerTests(unittest.TestCase):
         self.assertIsNone(model.gpu_snapshot()["allocatedBytes"])
         self.assertIsNone(model.gpu_snapshot()["reservedBytes"])
         self.assertIsNone(model.gpu_snapshot()["peakAllocatedBytes"])
+
+    def test_a_released_engine_is_forgotten_before_it_ends_so_its_watcher_reports_no_crash(self):
+        # The engine's watcher (engine_backends) wakes the moment its process exits and reports a
+        # crash for any engine it still owns: a park must never look like one, or the model stays
+        # in error ("llama.cpp stopped unexpectedly (exit code 0)") and is never woken again.
+        seen = []
+
+        class Engine:
+            returncode = None
+
+            def poll(self):
+                return self.returncode
+
+            def terminate(self):
+                self.returncode = 0
+                seen.append(model.ENGINE_PROCESS is self)
+
+            def wait(self, timeout=None):
+                return self.returncode
+
+            def kill(self):
+                self.returncode = -9
+
+        engine = Engine()
+        model.ENGINE_PROCESS = engine
+        model.gpu_release_memory()
+        self.assertEqual((seen, model.ENGINE_PROCESS), ([False], None))
+
+        # An engine that cannot be ended stays owned, so nothing loses track of a live process.
+        class Stuck(Engine):
+            def terminate(self):
+                pass
+
+            def wait(self, timeout=None):
+                raise subprocess.TimeoutExpired("llama-server", timeout)
+
+            def kill(self):
+                pass
+
+        stuck = Stuck()
+        model.ENGINE_PROCESS = stuck
+        try:
+            with self.assertRaises(subprocess.TimeoutExpired):
+                model.gpu_release_memory()
+            self.assertIs(model.ENGINE_PROCESS, stuck)
+        finally:
+            model.ENGINE_PROCESS = None
 
 
 GIB = 2 ** 30

@@ -606,6 +606,7 @@ impl LaunchLayout for RuntimeLayout {
                 vsock_cid: None,
                 egress_endpoints: request.required.declared_endpoints.clone(),
                 workload_image: request.required.workload_image.clone(),
+                targets: request.required.targets.clone(),
             },
             guest_image: image,
         })

@@ -32,7 +32,7 @@ class Scenarios(combined.Combined):
         self.args = args
         self.environments = {}
         self.keys = {}
-        self.env["YOUGORI_CATALOG_ROOT"] = str(args.catalog_root.resolve())
+        self.env["YOUGORI_ACCEPTANCE_CATALOG_ROOT"] = str(args.catalog_root.resolve())
         self.env["YOUGORI_CATALOG_QUOTA_BYTES"] = str(16 * 1024 ** 3)
 
     def create(self, name, folder, port, memory, quant=None):

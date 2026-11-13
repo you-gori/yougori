@@ -216,6 +216,25 @@ impl NetworkAuthority {
     }
 }
 
+/// Most targets one launch may name.
+pub const MAX_NETWORK_TARGETS: usize = 64;
+
+/// One destination a VM's network card is held to when its launch named targets: the host
+/// as the person named it (a DNS name or an IPv4 address), the IPv4 addresses this computer
+/// resolved it to at launch (an address names itself) and its TCP ports, none meaning every
+/// port. The host's network filter lets the VM open TCP connections to these alone, answers
+/// its DNS questions for these names alone, and never lets it reach this computer. On a
+/// named host's addresses (which other sites may share) each HTTPS and HTTP connection must
+/// ask for a host named there by name.
+#[derive(Clone, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct NetworkTarget {
+    pub host: String,
+    pub addresses: Vec<std::net::Ipv4Addr>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub ports: Vec<u16>,
+}
+
 /// A kind of credential a sandbox may be exposed to (§1.3 line 1902).
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -545,6 +564,12 @@ pub struct RequiredProperties {
     pub declared_endpoints: Vec<GuestEgressEndpoint>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub workload_image: Option<crate::sandbox_contract::oci::WorkloadImage>,
+    /// With the internet channel, the only destinations the VM's network card reaches
+    /// (`None`: the public internet, never this computer or its networks). Left out of the
+    /// serialized form when none are named, so the records of other launches keep their
+    /// identity.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub targets: Option<Vec<NetworkTarget>>,
 }
 
 /// The most endpoints one launch declares: each gets a loopback address of its own in the
@@ -760,6 +785,7 @@ impl RequiredProperties {
             perimeter: PerimeterRequirement::NotRequired,
             declared_endpoints: Vec::new(),
             workload_image: None,
+            targets: None,
         }
     }
 }

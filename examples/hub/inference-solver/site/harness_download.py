@@ -38,9 +38,117 @@ def catalog():
     return json.loads((ROOT / "packages.json").read_text())
 
 
+UNPUBLISHED = "The administrator has not published this harness's Sandbox VM image yet."
+STALE = "The published VM image needs updating before this harness can start."
+INCOMPLETE = "The published VM files are incomplete. The administrator needs to prepare them again."
+UNREADABLE = "The published VM image is unavailable. The administrator needs to prepare it again."
+# Yougori's own agent has no image of its own: a launcher that starts a harness from its own image
+# cannot start it.
+OWN_AGENT = "This version of Yougori cannot start Yougori's own agent. Update Yougori: yougori update"
+
+# The Yougori harness holds every other harness. Its images (scripts/build-vm-images.py yougori)
+# are one base image in a few variants and a pack per harness (its engine: a tool archive), all in
+# vm-images/yougori beside one image.json:
+#   {"runtime", "platform", "version",
+#    "bases": {NAME: {"sha256", "bytes", "disk"}},
+#    "packs": {HARNESS: {"sha256", "bytes", "version", "base", "disk", "memory"},
+#              "yougori": {"base", "disk", "memory"}}}
+# A base is imported once with `disk` GB of root (room for each of its packs); a harness's VM
+# starts from its base with `memory` GB unless the person chose a size, and gets its pack through
+# the VM's private control connection. Yougori's own agent needs no pack.
+YOUGORI = "yougori"
+RUNTIME = "yougori-sandbox-vm"
+PLATFORM = "linux/amd64"
+DIGEST = re.compile(r"[a-f0-9]{64}")
+NAME = re.compile(r"[a-z][a-z0-9-]{0,31}")
+# The launcher's bounds: an image archive and a pack it downloads, and the largest root Yougori imports.
+IMAGE_BYTES = 300 << 20
+PACK_BYTES = 512 << 20
+ROOT_GB = 8
+
+
+def yougori_image(value):
+    """The Yougori harness's image.json, checked: every base and pack well formed, every pack on a
+    listed base whose root has room for it, with memory for that root (the base's root and
+    512 MiB for the VM). Raises ValueError otherwise."""
+    def count(number, most):
+        return type(number) is int and 0 < number <= most
+    if (not isinstance(value, dict) or value.get("runtime") != RUNTIME or value.get("platform") != PLATFORM
+            or not isinstance(value.get("version"), str) or not value["version"] or not isinstance(value.get("bases"), dict)
+            or not isinstance(value.get("packs"), dict) or not 1 <= len(value["bases"]) <= 8 or len(value["packs"]) > 256):
+        raise ValueError("Invalid image descriptor.")
+    for name, base in value["bases"].items():
+        if (not NAME.fullmatch(name) or not isinstance(base, dict) or not DIGEST.fullmatch(str(base.get("sha256", "")))
+                or not count(base.get("bytes"), IMAGE_BYTES) or not count(base.get("disk"), ROOT_GB)):
+            raise ValueError("Invalid image descriptor.")
+    for name, pack in value["packs"].items():
+        base = value["bases"].get(pack.get("base")) if isinstance(pack, dict) and isinstance(pack.get("base"), str) else None
+        if (not NAME.fullmatch(name) or base is None or not count(pack.get("disk"), base["disk"])
+                or not count(pack.get("memory"), 1024) or pack["memory"] < base["disk"] + 1):
+            raise ValueError("Invalid image descriptor.")
+        has_pack = any(key in pack for key in ("sha256", "bytes", "version"))
+        if name == YOUGORI:
+            if has_pack:
+                raise ValueError("Invalid image descriptor.")
+        elif (not DIGEST.fullmatch(str(pack.get("sha256", ""))) or not count(pack.get("bytes"), PACK_BYTES)
+                or not isinstance(pack.get("version"), str) or not pack["version"]):
+            raise ValueError("Invalid image descriptor.")
+    return value
+
+
+def offered_image(record, offered):
+    """The Yougori harness's image.json as this website hands it out: only the packs of the
+    harnesses offered here, and the bases they start from."""
+    packs = {name: pack for name, pack in record["packs"].items() if name in offered}
+    used = {pack["base"] for pack in packs.values()}
+    return {**record, "bases": {name: base for name, base in record["bases"].items() if name in used}, "packs": packs}
+
+
+def held(name, published=None):
+    """Whether `name` can start inside the Yougori harness here, as `yougori inference run` starts
+    every harness: the Yougori harness's images list its pack at the pinned version (Yougori's own
+    agent needs none), and that pack and its base image are published whole. With `published` (a
+    hosted instance's artifacts, served elsewhere) only the listing is checked."""
+    specs = catalog()
+    spec = specs.get(name)
+    if spec is None or YOUGORI not in specs:
+        return {"available": False, "reason": UNPUBLISHED, "version": None}
+    reason = spec.get("blocked", "") or specs[YOUGORI].get("blocked", "")
+    if not reason:
+        try:
+            record = published.get("images", {}).get(YOUGORI) if published is not None else vm_image(YOUGORI)
+            if not record:
+                reason = UNPUBLISHED
+            else:
+                record = yougori_image(record)
+                pack = record["packs"].get(name)
+                if record["version"] != specs[YOUGORI].get("version"):
+                    reason = STALE
+                elif pack is None:
+                    reason = UNPUBLISHED
+                elif name != YOUGORI and pack["version"] != spec.get("version"):
+                    reason = STALE
+                elif published is None:
+                    base = record["bases"][pack["base"]]
+                    image = vm_image(YOUGORI, base["sha256"])
+                    archive = vm_image(YOUGORI, pack["sha256"], "tool") if name != YOUGORI else None
+                    if (not image or image.stat().st_size != base["bytes"]
+                            or (name != YOUGORI and (not archive or archive.stat().st_size != pack["bytes"]))):
+                        reason = INCOMPLETE
+        except (OSError, ValueError, KeyError, TypeError, AttributeError):
+            reason = UNREADABLE
+    return {"available": not reason, "reason": reason, "version": spec.get("version")}
+
+
 def availability(name, published=None):
+    """Whether `name`'s own Sandbox VM image is ready here (/api/harness-image/NAME): what every
+    launcher that starts a harness from its own image checks, the ones from before the Yougori
+    harness included. Yougori's own agent has none; it starts only from the Yougori harness's
+    images (held)."""
     spec=catalog()[name]
     reason=spec.get('blocked','')
+    if name == YOUGORI:
+        return {'available': False, 'reason': reason or OWN_AGENT, 'version': spec.get('version')}
     if published is not None:
         record = published.get('images', {}).get(name)
         if not reason and (not record or record.get('version') != spec.get('version')):
@@ -75,7 +183,9 @@ def vm_image(harness, digest=None, kind=None):
         if not path.is_file():
             return None
         value = json.loads(path.read_text(encoding="utf-8"))
-        if not re.fullmatch(r"[a-f0-9]{64}", str(value.get("sha256", ""))):
+        if harness == YOUGORI:
+            return yougori_image(value)
+        if not isinstance(value, dict) or not re.fullmatch(r"[a-f0-9]{64}", str(value.get("sha256", ""))):
             raise ValueError("Invalid image descriptor.")
         return value
     if not re.fullmatch(r"[a-f0-9]{64}", digest):
@@ -88,9 +198,9 @@ def vm_image(harness, digest=None, kind=None):
 def bundle(harness, server):
     server = origin(server)
     specs = catalog()
-    if harness != "node" and harness not in specs:
+    if harness not in ("node", "rental") and harness not in specs:
         raise ValueError("Unknown harness.")
-    if harness != "node" and specs[harness].get("blocked"):
+    if harness not in ("node", "rental") and specs[harness].get("blocked"):
         raise ValueError(specs[harness]["blocked"])
     stream = io.BytesIO()
     with zipfile.ZipFile(stream, "w", zipfile.ZIP_DEFLATED) as archive:
@@ -99,12 +209,14 @@ def bundle(harness, server):
             info.compress_type = zipfile.ZIP_DEFLATED
             info.external_attr = 0o100644 << 16
             archive.writestr(info, raw)
-        if harness == "node":
-            for name in ("compute_node.py", "compute_adapter.py", "compute_options.py", "grid_adapter.py", "control_panel.py"):
+        if harness in ("node", "rental"):
+            # A rented GPU's agent (rental_agent.py) serves through the connector's own code.
+            for name in ("compute_node.py", "compute_adapter.py", "compute_options.py", "grid_adapter.py", "control_panel.py") + (("rental_agent.py",) if harness == "rental" else ()):
                 put(name, (ROOT.parent / name).read_bytes())
             put("harnesses/transport.py", (ROOT / "transport.py").read_bytes())
+        if harness == "node":
             put("cli_entry.py", b'import json,runpy,sys\nfrom pathlib import Path\np=Path(__file__).resolve().parent\nsys.argv=[sys.argv[1],*sys.argv[2:]]\nrunpy.run_path(str(p/"compute_node.py"),run_name="__main__")\n')
-        else:
+        if harness not in ("node", "rental"):
             for name in FILES:
                 put(name, (ROOT / name).read_bytes())
         put("connection.json", json.dumps({"server": server, "harness": harness}))

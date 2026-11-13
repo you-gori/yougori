@@ -31,6 +31,22 @@ server = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(server)
 # The bundled verifier exactly as model_runner.rs ships it (registry_source(): CRLF normalized to LF).
 VERIFIER_SOURCE = base64.b64encode(zlib.compress((Path(__file__).parents[1] / "src-tauri/src/model_runner/registry_snapshot.py").read_bytes().replace(b"\r\n", b"\n"))).decode("ascii")
+
+
+def without_comment_lines(text):
+    """model_runner.rs's without_comment_lines: the lines that are only a comment go, outside
+    triple-quoted strings. The model server and the engine backends travel this way (LF)."""
+    kept, inside = [], None
+    for line in text.replace("\r\n", "\n").split("\n"):
+        if inside is None and line.strip().startswith("#"):
+            continue
+        kept.append(line)
+        for quote in ('"""', "'''"):
+            if inside in (None, quote) and line.count(quote) % 2 == 1:
+                inside = quote if inside is None else None
+    return "\n".join(kept)
+
+
 LOCAL_VLLM_CONFIG = {"model_type":"llama", "architectures":["LlamaForCausalLM"], "num_attention_heads":8, "num_key_value_heads":8,
                      "max_position_embeddings":4096, "torch_dtype":"bfloat16"}
 
@@ -157,7 +173,8 @@ class ModelServerTests(unittest.TestCase):
         with patch.dict("sys.modules",transformers=SimpleNamespace(TextIteratorStreamer=Streamer,StoppingCriteriaList=list)), \
              patch.object(server,"TOKENIZER",SimpleNamespace(chat_template=None,pad_token_id=0,eos_token_id=1)), \
              patch.object(server,"TORCH",torch),patch.object(server,"NETWORK",SimpleNamespace(generate=generate)), \
-             patch.object(server,"prepare",return_value=({},2,0)),patch.object(server,"GENERATION",threading.Lock()):
+             patch.object(server,"prepare",return_value=({},2,0)),patch.object(server,"context_window",return_value=4096), \
+             patch.object(server,"GENERATION",threading.Lock()):
             server.generate({"messages":[{"role":"user","content":"hi"}],"stream":True},handler,meter)
         events=[json.loads(line[6:]) for line in output.getvalue().decode().splitlines() if line.startswith("data: {")]
         text="".join(event["choices"][0]["delta"].get("content","") for event in events)
@@ -202,7 +219,7 @@ class ModelServerTests(unittest.TestCase):
         with patch.dict("sys.modules", transformers=SimpleNamespace(TextIteratorStreamer=Streamer, StoppingCriteriaList=list)), \
              patch.object(server, "TOKENIZER", SimpleNamespace(chat_template="official", pad_token_id=0, eos_token_id=1)), \
              patch.object(server, "TORCH", torch), patch.object(server, "NETWORK", SimpleNamespace(generate=generate)), \
-             patch.object(server, "prepare", return_value=({}, 2, 0)), patch.object(server, "GENERATION", threading.Lock()), \
+             patch.object(server, "prepare", return_value=({}, 2, 0)), patch.object(server, "context_window", return_value=4096), patch.object(server, "GENERATION", threading.Lock()), \
              patch.object(server.RUNNER_TIMINGS, "token_trace", return_value=trace) as token_trace:
             server.generate({"messages": [{"role": "user", "content": "hi"}], "stream": True}, handler, meter)
         token_trace.assert_called_once_with("transformers-streamer-flush")
@@ -236,7 +253,7 @@ class ModelServerTests(unittest.TestCase):
                  patch.object(server, "TORCH", torch), \
                  patch.object(server, "NETWORK", SimpleNamespace(generate=Mock(side_effect=failure("sensitive detail " + server.TOKEN)))), \
                  patch.object(server, "TOKENIZER", SimpleNamespace(pad_token_id=0, eos_token_id=1)), \
-                 patch.object(server, "prepare", return_value=({}, 2, 0)), \
+                 patch.object(server, "prepare", return_value=({}, 2, 0)), patch.object(server, "context_window", return_value=4096), \
                  patch.dict(server.STATE, status="ready", error=None):
                 listener = server.Server(("127.0.0.1", 0), server.Handler)
                 worker = threading.Thread(target=listener.serve_forever, daemon=True)
@@ -272,7 +289,7 @@ class ModelServerTests(unittest.TestCase):
              patch.object(server, "GENERATION", lock), patch.object(server, "TORCH", torch), \
              patch.object(server, "NETWORK", SimpleNamespace(generate=stall)), \
              patch.object(server, "TOKENIZER", SimpleNamespace(pad_token_id=0, eos_token_id=1)), \
-             patch.object(server, "prepare", return_value=({}, 2, 0)), \
+             patch.object(server, "prepare", return_value=({}, 2, 0)), patch.object(server, "context_window", return_value=4096), \
              patch.dict(server.STATE, status="ready", error=None), \
              patch.object(server, "GENERATION_MAX_SECONDS", .1, create=True), \
              patch.object(server, "STREAM_CANCEL_GRACE_SECONDS", .05):
@@ -334,7 +351,7 @@ class ModelServerTests(unittest.TestCase):
                      patch.object(server, "GENERATION", lock), patch.object(server, "TORCH", torch), \
                      patch.object(server, "NETWORK", SimpleNamespace(generate=generate)), \
                      patch.object(server, "TOKENIZER", SimpleNamespace(pad_token_id=0, eos_token_id=1)), \
-                     patch.object(server, "prepare", return_value=({}, 2, 0)), \
+                     patch.object(server, "prepare", return_value=({}, 2, 0)), patch.object(server, "context_window", return_value=4096), \
                      patch.object(server, "STREAM_POLL_SECONDS", .05), \
                      patch.dict(server.STATE, status="ready", error=None):
                     result = server.generate({"messages":[{"role":"user", "content":"hello"}], "stream":True}, handler, meter)
@@ -377,7 +394,7 @@ class ModelServerTests(unittest.TestCase):
              patch.object(server, "GENERATION", lock), patch.object(server, "TORCH", torch), \
              patch.object(server, "NETWORK", network), \
              patch.object(server, "TOKENIZER", SimpleNamespace(pad_token_id=0, eos_token_id=1)), \
-             patch.object(server, "prepare", return_value=({}, 2, 0)), \
+             patch.object(server, "prepare", return_value=({}, 2, 0)), patch.object(server, "context_window", return_value=4096), \
              patch.dict(server.STATE, status="ready", error=None), \
              patch.object(server, "STREAM_MAX_SECONDS", .1, create=True), \
              patch.object(server, "STREAM_POLL_SECONDS", .05, create=True), \
@@ -702,9 +719,12 @@ class ModelServerTests(unittest.TestCase):
         return namespace, FunctionType(server.load_backends.__code__, namespace)
 
     def test_the_engine_backends_load_once_from_checked_injection_a_bundle_or_the_source_tree(self):
-        # The digest the server ships is the source tree's file, as the engine compresses it (LF).
-        self.assertEqual(server.BACKENDS_SHA256, hashlib.sha256(self.BACKENDS.replace(b"\r\n", b"\n")).hexdigest())
-        injected = base64.b64encode(zlib.compress(self.BACKENDS)).decode()
+        # The digest the server ships is the source tree's file as the engine sends it (backends_source:
+        # LF, less its comment-only lines). After engine_backends.py changes, BACKENDS_SHA256 in
+        # model_server.py is the digest this assertion prints first (or the Rust test's message).
+        sent = without_comment_lines(self.BACKENDS.decode("utf-8")).encode("utf-8")
+        self.assertEqual(hashlib.sha256(sent).hexdigest(), server.BACKENDS_SHA256)
+        injected = base64.b64encode(zlib.compress(sent)).decode()
         with patch.dict(server.HELPERS_SERVED, clear=True), patch.dict(os.environ, YOUGORI_HELPERS="", YOUGORI_BACKENDS_SOURCE=injected):
             namespace, load = self.without_backends()
             self.assertNotIn("load_vllm", namespace)
@@ -717,7 +737,7 @@ class ModelServerTests(unittest.TestCase):
             load()
             self.assertEqual(namespace["VLLM_PARKED"], "kept")
         # Injected source the server does not ship is refused before any of it runs.
-        changed = base64.b64encode(zlib.compress(self.BACKENDS + b"\nLOAD_MARK = 1\n")).decode()
+        changed = base64.b64encode(zlib.compress(sent + b"\nLOAD_MARK = 1\n")).decode()
         with patch.dict(server.HELPERS_SERVED, clear=True), patch.dict(os.environ, YOUGORI_HELPERS="", YOUGORI_BACKENDS_SOURCE=changed):
             namespace, load = self.without_backends()
             with self.assertRaisesRegex(RuntimeError, "engine backends failed integrity verification"):
@@ -1196,7 +1216,7 @@ vllm:kv_cache_usage_perc{{engine="0",model_name="m"}} 0.25
              patch.object(server, "GPU_CAPACITY", 2 ** 30), \
              patch.object(server, "NETWORK", SimpleNamespace(generate=over)), \
              patch.object(server, "TOKENIZER", SimpleNamespace(pad_token_id=0, eos_token_id=1)), \
-             patch.object(server, "prepare", return_value=({}, 2, 0)), \
+             patch.object(server, "prepare", return_value=({}, 2, 0)), patch.object(server, "context_window", return_value=4096), \
              patch.dict(server.STATE, status="ready", error=None):
             status, body = server.generate({"messages":[{"role":"user", "content":"hello"}]}, None, meter)
             self.assertEqual(server.STATE["status"], "ready")
@@ -1378,6 +1398,35 @@ vllm:kv_cache_usage_perc{{engine="0",model_name="m"}} 0.25
         for extra in [{"n": 2}, {"logprobs": True}, {"seed": -1}, {"seed": "7"}, {"presence_penalty": 3}, {"frequency_penalty": True}, {"user": 5}, {"metadata": "x"}, {"logit_bias": {}}]:
             with self.assertRaises(ValueError):
                 server.validate_chat({**valid, **extra})
+        # What harnesses add that this server does not use is dropped, not refused: vendor fields,
+        # cache hints on messages and text parts, earlier replies' reasoning, other usage flags.
+        # OpenAI's developer role is the system role.
+        body = {"messages": [{"role": "developer", "content": [{"type": "text", "text": "rules", "cache_control": {"type": "ephemeral"}}]},
+                             {"role": "user", "content": "hello", "cache_control": {"type": "ephemeral"}},
+                             {"role": "assistant", "content": "hi", "reasoning_content": "thought", "refusal": None},
+                             {"role": "user", "content": "again"}],
+                "top_k": 20, "modalities": ["text"], "verbosity": "low", "stream_options": {"include_usage": True, "continuous_usage_stats": False}}
+        messages = server.validate_chat(body)[0]
+        self.assertEqual([m["role"] for m in messages], ["system", "user", "assistant", "user"])
+        self.assertEqual(messages[0]["content"], "rules")
+        self.assertEqual(messages[1], {"role": "user", "content": "hello"})
+        self.assertNotIn("top_k", body)
+        self.assertEqual(body["stream_options"], {"include_usage": True})
+        for extra in [{"functions": []}, {"modalities": ["text", "audio"]}, {"top_logprobs": 2}, {"stream_options": {"include_usage": "yes"}},
+                      {"messages": [{"role": "user", "content": [{"type": "image_url", "image_url": {"url": "x"}}]}]}]:
+            with self.assertRaises(ValueError):
+                server.validate_chat({**valid, **extra})
+        # Other servers' output constraints are refused, not dropped: dropped, the caller would get
+        # free text where it expects its schema, choice or pattern (response_format is the way here).
+        for field in ("guided_json", "guided_regex", "guided_choice", "guided_grammar", "structured_outputs",
+                      "structural_tag", "grammar", "json_schema", "regex", "ebnf"):
+            with self.subTest(field=field), self.assertRaises(ValueError):
+                server.validate_chat({**valid, field: {"type": "object"}})
+        self.assertLessEqual({"guided_json", "guided_regex", "guided_choice", "guided_grammar", "structured_outputs"}, server.CHAT_CONSTRAINTS)
+        # vLLM's enforcement hints bind nothing alone: a JSON reply format with them still passes.
+        for hint in ("guided_decoding_backend", "guided_whitespace_pattern"):
+            with self.subTest(hint=hint):
+                server.validate_chat({**valid, "response_format": {"type": "json_object"}, hint: "xgrammar"})
         # OpenAI's reply formats, checked for shape only here (what enforces them is the launch's
         # business): the two JSON kinds pass, text is no format, and anything else is refused
         # with a typed sentence that never echoes the request.
@@ -1396,6 +1445,72 @@ vllm:kv_cache_usage_perc{{engine="0",model_name="m"}} 0.25
                 server.validate_chat({**valid, "response_format": value})
             self.assertEqual(refused.exception.body()["error"]["code"], "yougori_structured_output")
             self.assertNotIn("xml", refused.exception.body()["error"]["message"])
+
+    def test_the_injected_model_server_is_the_same_program_without_its_comment_lines(self):
+        # model_runner.rs (without_comment_lines) sends this server and the engine backends without
+        # the lines that are only a comment, outside triple-quoted strings: the same rule here must
+        # leave each parse tree as it is, and keep the server well inside the CUDA runtime agent's
+        # 128 KiB request with the other sources.
+        for path in (Path(__file__).parents[1] / "src-tauri/src/model_runner/engine_backends.py", Path(server.__file__)):
+            text = path.read_text(encoding="utf-8").replace("\r\n", "\n")
+            stripped = without_comment_lines(text)
+            self.assertEqual(ast.dump(ast.parse(text)), ast.dump(ast.parse(stripped)), path)
+            self.assertLess(len(stripped), len(text), path)
+        self.assertLess(len(zlib.compress(stripped.encode("utf-8"), 9)) * 4 // 3, 62000)
+
+    def test_a_model_shared_with_coding_agents_takes_their_long_sessions(self):
+        user = lambda text: {"role": "user", "content": text}
+        turns = lambda count: [{"role": "user" if i % 2 == 0 else "assistant", "content": "x"} for i in range(count - 1)] + [user("y")]
+        # Without the agent limits: 128 messages, 32,768 characters, a 256-token default reply, and
+        # a refusal that names the limit (code yougori_request_limit, the server's own words).
+        with self.assertRaises(server.RequestLimit) as refused:
+            server.validate_chat({"messages": turns(129)})
+        self.assertEqual(refused.exception.body()["error"]["code"], "yougori_request_limit")
+        # Plain ASCII words: the website keeps only printable ASCII, and an en dash between 1 and 128 left "1128".
+        self.assertEqual(refused.exception.body()["error"]["message"], "Provide 1 to 128 chat messages")
+        with self.assertRaises(server.RequestLimit):
+            server.validate_chat({"messages": [user("x" * 32769)]})
+        with self.assertRaises(server.RequestLimit) as refused:
+            server.validate_chat({"messages": [user("hello")], "max_tokens": 4097})
+        self.assertEqual(str(refused.exception), "max_tokens must be 1 to 4,096")
+        tool = {"type": "function", "function": {"name": "lookup", "parameters": {"type": "object"}}}
+        with patch.object(server, "FORMAT", "gguf"), self.assertRaises(server.RequestLimit) as refused:
+            server.validate_chat({"messages": [user("hello")], "tools": [tool] * 33})
+        self.assertEqual(str(refused.exception), "Agent tools require the GGUF or vLLM runner and 1 to 32 function definitions")
+        with patch.dict(os.environ, {"YOUGORI_MODEL_AGENT_API": "1"}):
+            self.assertEqual(server.validate_chat({"messages": [user("hello")]})[1], 4096)
+            server.validate_chat({"messages": turns(1024)})
+            with self.assertRaises(server.RequestLimit) as refused:
+                server.validate_chat({"messages": turns(1025)})
+            self.assertEqual(str(refused.exception), "Provide 1 to 1,024 chat messages")
+            # A 30K-token agent turn (Plandex's implementation request) is past 130K characters; the
+            # token count against the context is the real limit.
+            server.validate_chat({"messages": [user("x" * 262144)]})
+            with self.assertRaises(server.RequestLimit) as refused:
+                server.validate_chat({"messages": [user("x" * 262145)]})
+            self.assertIn("262,144", str(refused.exception))
+            # With truncate the oldest turns are dropped to fit instead (fit()).
+            server.validate_chat({"messages": [user("x" * 262145)], "truncate": True})
+            # A model given a larger window (--context) takes about 6 characters a token; 32,768 keeps 262,144.
+            with patch.dict(server.LLAMA, {"context": 32768}), self.assertRaises(server.RequestLimit):
+                server.validate_chat({"messages": [user("x" * 262145)]})
+            with patch.dict(server.LLAMA, {"context": 131072}):
+                server.validate_chat({"messages": [user("x" * 786432)]})
+                with self.assertRaises(server.RequestLimit) as refused:
+                    server.validate_chat({"messages": [user("x" * 786433)]})
+                self.assertIn("786,432", str(refused.exception))
+
+    def test_the_refusals_a_caller_reads_are_printable_ascii(self):
+        """The website relays a replica's typed refusal through re.sub(r"[^ -~]", "", message), so
+        every word of RequestLimit and ContextRefusal stays printable ASCII."""
+        tree = ast.parse(Path(server.__file__).read_text(encoding="utf-8"))
+        texts = [node.value for call in ast.walk(tree) if isinstance(call, ast.Call) and getattr(call.func, "id", None) in ("RequestLimit", "ContextRefusal")
+                 for argument in call.args[:1] for node in ast.walk(argument) if isinstance(node, ast.Constant) and isinstance(node.value, str)]
+        self.assertGreaterEqual(len(texts), 10)
+        # The most common refusal is among them, written at its call rather than in a variable.
+        self.assertTrue(any(text.startswith("-token context window; shorten it") for text in texts))
+        for text in texts:
+            self.assertRegex(text, r"^[ -~]*$")
 
     def test_truncation_drops_whole_oldest_turns_and_keeps_the_system_prompt(self):
         class Inputs(dict):
@@ -1424,6 +1539,114 @@ vllm:kv_cache_usage_perc{{engine="0",model_name="m"}} 0.25
                 server.prepare(conversation, 20, True)
         finally:
             server.TOKENIZER = server.NETWORK = None
+
+    def test_truncation_finds_the_earliest_start_that_fits_in_a_few_measures(self):
+        """fit() binary-searches the starts that dropping one turn at a time stopped at (each later
+        user message, then the newest message alone) and gets that loop's result; the loop measured
+        a long agent session once per dropped turn while the request held a queue slot."""
+        def linear(messages, count, truncate, context, measure):
+            # fit() as it was: one measure per dropped turn.
+            if count >= context:
+                raise server.ContextRefusal("max_tokens", context, count=count)
+            messages, dropped = list(messages), 0
+            while True:
+                measured, tokens = measure(messages)
+                if tokens + count <= context:
+                    return measured, tokens, dropped
+                turns = [i for i, m in enumerate(messages) if m["role"] != "system"]
+                if not truncate or len(turns) <= 1:
+                    raise server.ContextRefusal("conversation", context, tokens=tokens, count=count)
+                del messages[turns[0]]
+                dropped += 1
+                while True:
+                    rest = [i for i, m in enumerate(messages) if m["role"] != "system"]
+                    if len(rest) <= 1 or messages[rest[0]]["role"] == "user":
+                        break
+                    del messages[rest[0]]
+                    dropped += 1
+
+        def outcome(fit, *arguments):
+            try:
+                return fit(*arguments)
+            except server.ContextRefusal as refusal:
+                return refusal.tokens, refusal.count
+            except ValueError as error:
+                return str(error)
+
+        measure = lambda messages: (messages, sum(4 + len(m["content"]) for m in messages))
+
+        def strict(messages):
+            # Like a template that refuses a conversation which does not start with the user.
+            if next((m["role"] for m in messages if m["role"] != "system"), "user") != "user":
+                raise ValueError("Conversation roles must alternate user/assistant/user/assistant")
+            return measure(messages)
+        import random
+        generator = random.Random(47)
+        for case in range(400):
+            messages = [{"role": generator.choice(("system", "user", "user", "assistant", "assistant", "tool")), "content": "x" * generator.randrange(60)}
+                        for _ in range(generator.randrange(1, 30))]
+            count, truncate, context = generator.randrange(1, 64), generator.random() < 0.8, generator.randrange(32, 900)
+            for measuring in (measure, strict):
+                with self.subTest(case=case, measure=measuring.__name__):
+                    arguments = (messages, count, truncate, context, measuring)
+                    self.assertEqual(outcome(server.fit, *arguments), outcome(linear, *arguments))
+        calls = []
+        counted = lambda messages: calls.append(len(messages)) or measure(messages)
+        # 500 exchanges after a system prompt, on a context that holds the newest 306 messages:
+        # 19 measures where the loop took 348.
+        session = [{"role": "system", "content": "rules"}] + [{"role": ("user", "assistant")[i % 2], "content": "x" * 100} for i in range(1000)]
+        fitted = server.fit(session, 64, True, 32000, counted)
+        self.assertEqual(fitted, linear(session, 64, True, 32000, measure))
+        self.assertEqual((fitted[1], fitted[2], len(calls)), (9 + 306 * 104, 694, 19))
+        # The usual case, a conversation just past the window, costs three measures (the whole,
+        # the newest message alone, the first start), about what the loop's two did.
+        calls.clear()
+        fitted = server.fit(session, 64, True, 9 + 1000 * 104 + 63, counted)
+        self.assertEqual((fitted[2], len(calls)), (2, 3))
+        # A body whose newest message alone overflows is refused after two measures, not one per turn.
+        calls.clear()
+        crafted = [{"role": ("user", "assistant")[i % 2], "content": "x"} for i in range(998)] + [{"role": "user", "content": "x" * 40000}]
+        with self.assertRaises(server.ContextRefusal) as refused:
+            server.fit(crafted, 64, True, 32000, counted)
+        self.assertEqual((refused.exception.tokens, refused.exception.count, len(calls)), (40004, 64, 2))
+        # A template that refuses the newest message alone (a tool result, no user message) does not
+        # stop an earlier start that fits; when none fits, the template's error is the answer, as it was.
+        def template(messages):
+            if not any(m["role"] == "user" for m in messages):
+                raise ValueError("No user query found in messages.")
+            return measure(messages)
+        agent = [{"role": "user", "content": "x" * 50}, {"role": "assistant", "content": "x" * 50},
+                 {"role": "user", "content": "x"}, {"role": "assistant", "content": "x"}, {"role": "tool", "content": "x"}]
+        self.assertEqual(server.fit(agent, 8, True, 40, template), (agent[2:], 15, 2))
+        for fit in (server.fit, linear):
+            with self.assertRaisesRegex(ValueError, "No user query"):
+                fit(agent, 8, True, 20, template)
+
+    def test_a_default_reply_length_takes_what_the_context_leaves(self):
+        """Without max_tokens the reply length is this server's default (4096 with the agent API):
+        the conversation then needs one token of room and the reply stops where the context does,
+        so a 4096-token model is not refused for a length its caller never set."""
+        seen = {}
+
+        def prepare(messages, count, truncate):
+            seen["room"] = count
+            return {}, 1000, 0
+
+        def output(inputs, kwargs, meter):
+            seen["length"] = kwargs["max_new_tokens"]
+            raise server.GenerationTimeout("fixture")
+        with patch.object(server, "prepare", side_effect=prepare), patch.object(server, "context_window", return_value=4096), \
+             patch.object(server, "non_streaming_output", side_effect=output), patch.object(server, "GENERATION", threading.Lock()), \
+             patch.object(server, "TOKENIZER", SimpleNamespace(pad_token_id=0, eos_token_id=1, chat_template="official")):
+            for agent, extra, expected in (("1", {}, (1, 3096)), ("", {}, (1, 256)), ("1", {"max_tokens": 64}, (64, 64)),
+                                           ("", {"max_completion_tokens": 2048}, (2048, 2048)),
+                                           # An agent's longer length needs only AGENT_REPLY_FLOOR and gets what the context leaves.
+                                           ("1", {"max_tokens": 4096}, (1024, 3096)),
+                                           # Truncate keeps up to half the context for a default-length reply.
+                                           ("1", {"truncate": True}, (2048, 3096)), ("", {"truncate": True}, (256, 256))):
+                with self.subTest(agent=agent, extra=extra), patch.dict(os.environ, {"YOUGORI_MODEL_AGENT_API": agent}):
+                    status, _ = server.generate({"messages": [{"role": "user", "content": "fixture"}], **extra}, None, {})
+                    self.assertEqual((status, seen["room"], seen["length"]), (504, *expected))
 
     def test_usage_is_recorded_persisted_and_reset_without_prompt_text(self):
         import tempfile
@@ -1570,13 +1793,45 @@ class VllmRunnerTests(unittest.TestCase):
         finally:
             for listener in (public,native):listener.shutdown();listener.server_close()
 
+    def test_a_context_the_kv_cache_cannot_hold_is_shortened_before_vllm_starts(self):
+        gpu = 25651314688  # the owner's 24 GB laptop GPU
+        qwen3_8b = {"num_hidden_layers": 36, "num_attention_heads": 32, "num_key_value_heads": 8, "head_dim": 128,
+                    "hidden_size": 4096, "torch_dtype": "bfloat16", "sliding_window": None, "use_sliding_window": False}
+        fitted = server.vllm_context_fit(qwen3_8b, 16.4e9, gpu, 32768)
+        self.assertLess(fitted, 32768)
+        self.assertGreaterEqual(fitted, server.VLLM_CONTEXT_FLOOR)
+        self.assertEqual(fitted % 1024, 0)
+        # Models whose 32,768 tokens fit keep them: Qwen3-4B, and Qwen2.5-7B (4 KV heads), whose
+        # config names an unused sliding window.
+        qwen3_4b = {**qwen3_8b, "num_hidden_layers": 36, "num_attention_heads": 32, "num_key_value_heads": 8, "hidden_size": 2560}
+        self.assertEqual(server.vllm_context_fit(qwen3_4b, 8.06e9, gpu, 32768), 32768)
+        qwen25_7b = {"num_hidden_layers": 28, "num_attention_heads": 28, "num_key_value_heads": 4, "hidden_size": 3584,
+                     "torch_dtype": "bfloat16", "sliding_window": 131072, "use_sliding_window": False}
+        self.assertEqual(server.vllm_context_fit(qwen25_7b, 15.2e9, gpu, 32768), 32768)
+        # Attention this estimate does not describe, or a model too large, is left to vLLM's own check.
+        self.assertEqual(server.vllm_context_fit({**qwen3_8b, "kv_lora_rank": 512}, 16.4e9, gpu, 32768), 32768)
+        self.assertEqual(server.vllm_context_fit({**qwen3_8b, "use_sliding_window": True}, 16.4e9, gpu, 32768), 32768)
+        mistral = {key: value for key, value in qwen3_8b.items() if key != "use_sliding_window"} | {"sliding_window": 4096}
+        self.assertEqual(server.vllm_context_fit(mistral, 16.4e9, gpu, 32768), 32768)
+        self.assertEqual(server.vllm_context_fit({"num_hidden_layers": "x"}, 16.4e9, gpu, 32768), 32768)
+        self.assertEqual(server.vllm_context_fit(qwen3_8b, 30e9, gpu, 32768), 32768)
+        # Never below the floor: a nearly full GPU keeps at least VLLM_CONTEXT_FLOOR tokens.
+        self.assertEqual(server.vllm_context_fit(qwen3_8b, 19.9e9, gpu, 32768), server.VLLM_CONTEXT_FLOOR)
+
     def test_moe_memory_counts_all_weights_before_any_download(self):
         cuda = SimpleNamespace(is_available=lambda:True, device_count=lambda:1,
-            get_device_capability=lambda i:(12,0), mem_get_info=lambda i:(24*2**30,24*2**30))
+            get_device_capability=lambda i:(12,0), mem_get_info=lambda i:(24*2**30,24*2**30),
+            get_device_properties=lambda i:SimpleNamespace(total_memory=24*2**30))
+        # A checkpoint no GPU here could hold even when empty is refused before its download; the
+        # free-memory check runs once the GPU is granted, after the download.
         with self.assertRaisesRegex(RuntimeError, "No model weights were downloaded"):
+            server.vllm_fits_device(78*2**30, cuda)
+        with self.assertRaisesRegex(RuntimeError, "weights stay on disk"):
             server.vllm_hardware({"num_attention_heads":48,"num_key_value_heads":4}, 78*2**30, cuda)
         cuda.device_count=lambda:2
         cuda.mem_get_info=lambda i:(80*2**30,80*2**30)
+        cuda.get_device_properties=lambda i:SimpleNamespace(total_memory=80*2**30)
+        server.vllm_fits_device(78*2**30, cuda)
         self.assertEqual(server.vllm_hardware({"num_attention_heads":48,"num_key_value_heads":4},78*2**30,cuda),2)
         cuda.device_count=lambda:5
         with self.assertRaisesRegex(RuntimeError,"attention heads"):
@@ -1619,7 +1874,7 @@ class VllmRunnerTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as folder:
             config={"model_type":"kolibri1","architectures":["Kolibri1ForCausalLM"],"num_attention_heads":48,"num_key_value_heads":4,"max_position_embeddings":262144,"quantization_config":{"quant_method":"fp8"},"dtype":"bfloat16"}
             path=Path(folder)/'config.json';path.write_text(json.dumps(config))
-            cuda=SimpleNamespace(is_available=lambda:True,device_count=lambda:2,get_device_capability=lambda i:(9,0),mem_get_info=lambda i:(80*2**30,80*2**30),get_device_name=lambda i:'H100')
+            cuda=SimpleNamespace(is_available=lambda:True,device_count=lambda:2,get_device_capability=lambda i:(9,0),mem_get_info=lambda i:(80*2**30,80*2**30),get_device_properties=lambda i:SimpleNamespace(total_memory=80*2**30),get_device_name=lambda i:'H100')
             meta=SimpleNamespace(sha='a'*40,siblings=[SimpleNamespace(rfilename='model.safetensors',size=78*2**30)])
             hub=SimpleNamespace(HfApi=Mock(),hf_hub_download=Mock(return_value=str(path)))
             hub.HfApi.return_value.model_info.return_value=meta
@@ -1668,7 +1923,7 @@ class VllmRunnerTests(unittest.TestCase):
             with tempfile.TemporaryDirectory() as folder:
                 config={"model_type":"kolibri1","architectures":["Kolibri1ForCausalLM"],"num_attention_heads":48,"num_key_value_heads":4,"max_position_embeddings":4096,"dtype":"bfloat16"}
                 path=Path(folder)/'config.json';path.write_text(json.dumps(config))
-                cuda=SimpleNamespace(is_available=lambda:True,device_count=lambda:devices,get_device_capability=lambda i:(12,0),mem_get_info=lambda i:(24*2**30,24*2**30),get_device_name=lambda i:'RTX')
+                cuda=SimpleNamespace(is_available=lambda:True,device_count=lambda:devices,get_device_capability=lambda i:(12,0),mem_get_info=lambda i:(24*2**30,24*2**30),get_device_properties=lambda i:SimpleNamespace(total_memory=24*2**30),get_device_name=lambda i:'RTX')
                 meta=SimpleNamespace(sha='a'*40,siblings=[SimpleNamespace(rfilename='model.safetensors',size=2*2**30)])
                 hub=SimpleNamespace(HfApi=Mock(),hf_hub_download=Mock(return_value=str(path)))
                 hub.HfApi.return_value.model_info.return_value=meta
@@ -1733,7 +1988,7 @@ class VllmRunnerTests(unittest.TestCase):
             hub = SimpleNamespace(HfApi=Mock(), hf_hub_download=Mock(return_value=str(root/"config.json")))
             hub.HfApi.return_value.model_info.return_value = meta
             cuda = SimpleNamespace(is_available=lambda:True,device_count=lambda:1,
-                get_device_capability=lambda i:(9,0),mem_get_info=lambda i:(8*2**30,8*2**30),get_device_name=lambda i:"fixture GPU")
+                get_device_capability=lambda i:(9,0),mem_get_info=lambda i:(8*2**30,8*2**30),get_device_properties=lambda i:SimpleNamespace(total_memory=8*2**30),get_device_name=lambda i:"fixture GPU")
             stack.enter_context(patch.dict("sys.modules", torch=SimpleNamespace(cuda=cuda), huggingface_hub=hub))
             stack.enter_context(patch.object(server, "MODEL_REVISION", "a"*40))
             stack.enter_context(patch.object(server, "CACHE", folder))
@@ -2028,6 +2283,9 @@ class VllmRunnerTests(unittest.TestCase):
                 self.assertEqual(first[first.index("-np")+1:first.index("-np")+3], ["4", "--kv-unified"])
                 for args in launches:
                     self.assertEqual((args[args.index("-c")+1], args[args.index("--cache-ram")+1]), ("32768", "0"))
+                    # llama.cpp keeps 32 context checkpoints per slot in host RAM by default; with a
+                    # sliding-window model (Gemma) they outgrew an 8 GB container under agent traffic.
+                    self.assertEqual(args[args.index("--ctx-checkpoints")+1], "1")
                 if len(exits) == 2:
                     self.assertEqual(launches[1][launches[1].index("-np")+1], "1")
                     self.assertNotIn("--kv-unified", launches[1])
@@ -2041,6 +2299,54 @@ class VllmRunnerTests(unittest.TestCase):
                 self.assertEqual((server.LLAMA["slots"], server.LLAMA["pool"]), served)
                 self.assertEqual(server.backend_capabilities()["concurrency"]["slots"], served[0])
                 self.assertEqual(server.STATE["status"], "ready")
+
+    def test_a_llama_cpp_launch_allocates_the_owners_context_window_within_the_models_own(self):
+        """model optimize --context (YOUGORI_MODEL_CONTEXT) sets llama-server's -c, 32,768 without it,
+        never past ARCH.context_length in the GGUF header; the pool and status follow the window."""
+        def gguf(folder, longest, arch=b"gemma4"):
+            text = lambda value: len(value).to_bytes(8, "little") + value
+            uint32 = lambda key, value: text(key) + (4).to_bytes(4, "little") + value.to_bytes(4, "little")
+            pairs = [text(b"general.architecture") + (8).to_bytes(4, "little") + text(arch), uint32(arch + b".block_count", 30),
+                     text(b"tokenizer.ggml.scores") + (9).to_bytes(4, "little") + (6).to_bytes(4, "little") + (2).to_bytes(8, "little") + bytes(8)]
+            if longest:
+                pairs.insert(2, uint32(arch + b".context_length", longest))
+            path = Path(folder)/"model.gguf"
+            path.write_bytes(b"GGUF" + (3).to_bytes(4, "little") + bytes(8) + len(pairs).to_bytes(8, "little") + b"".join(pairs) + bytes(64))
+            return str(path)
+        with tempfile.TemporaryDirectory() as folder:
+            self.assertEqual(server.gguf_context(gguf(folder, 262144)), 262144)
+            self.assertEqual(server.gguf_context(gguf(folder, 40960, b"qwen3moe")), 40960)
+            self.assertEqual(server.gguf_context(gguf(folder, 0)), 0)
+            self.assertEqual(server.gguf_context(str(Path(folder)/"missing.gguf")), 0)
+        for setting, longest, window in ((None, 262144, 32768), ("131072", 262144, 131072), ("131072", 65536, 65536),
+                                         ("131072", None, 131072), ("lots", 262144, 32768), (None, 8192, 32768)):
+            with self.subTest(setting=setting, longest=longest), tempfile.TemporaryDirectory() as folder, ExitStack() as stack:
+                model = gguf(folder, longest or 0)
+                stack.enter_context(patch.dict(os.environ, YOUGORI_MODEL_PARALLEL="4", YOUGORI_MODEL_CPU="1"))
+                for name in ("YOUGORI_NATIVE_BACKEND", "YOUGORI_MODEL_CONTEXT"):
+                    os.environ.pop(name, None)
+                if setting:
+                    os.environ["YOUGORI_MODEL_CONTEXT"] = setting
+                stack.enter_context(patch.object(server, "FORMAT", "gguf"))
+                stack.enter_context(patch.object(server, "INFERENCE_QUEUE", server.InferenceQueue()))
+                stack.enter_context(patch.dict(server.STATE)); stack.enter_context(patch.dict(server.LLAMA, port=1, key="k"))
+                # llama.cpp reports the window it allocated, each of the unified slots up to all of it.
+                props = {"total_slots": 4, "default_generation_settings": {"n_ctx": window}}
+                launches = []
+                for name, value in (("install", Mock()), ("llama_server", Mock(return_value="/opt/llama/llama-server")),
+                                    ("verified_gguf", Mock(return_value=model)), ("gpu_before_load", Mock()),
+                                    ("llama", Mock(return_value=(Mock(), Mock(status=200)))), ("llama_json", Mock(return_value=props)),
+                                    ("ENGINE_PROCESS", None)):
+                    stack.enter_context(patch.object(server, name, value))
+                stack.enter_context(patch.object(server.subprocess, "run"))
+                stack.enter_context(patch.object(server.subprocess, "Popen", side_effect=lambda args, **kwargs: launches.append(list(args)) or Mock(poll=Mock(return_value=None))))
+                stack.enter_context(patch.object(server.threading, "Thread"))
+                stack.enter_context(patch.object(server.tempfile, "mkdtemp", return_value=folder))
+                server.load_gguf()
+                self.assertEqual(launches[0][launches[0].index("-c")+1], str(window))
+                self.assertEqual((server.LLAMA["context"], server.STATE["context"]), (window, window))
+                self.assertEqual((server.INFERENCE_QUEUE.slots, server.INFERENCE_QUEUE.pool), (4, window))
+                self.assertIn("whole window", server.backend_capabilities()["kvGrowth"]["detail"])
 
     def test_a_parked_vllm_sleeps_and_wakes_with_its_weights_reloaded_instead_of_restarting(self):
         with tempfile.TemporaryDirectory() as folder, ExitStack() as stack:
@@ -2094,7 +2400,7 @@ class VllmRunnerTests(unittest.TestCase):
             path = Path(folder)/"config.json"; path.write_text(json.dumps(config))
             meta = SimpleNamespace(sha="a"*40, siblings=[SimpleNamespace(rfilename="model.safetensors", size=2**30)])
             hub = SimpleNamespace(HfApi=Mock(), hf_hub_download=Mock(return_value=str(path))); hub.HfApi.return_value.model_info.return_value = meta
-            cuda = SimpleNamespace(is_available=lambda:True, device_count=lambda:1, get_device_capability=lambda i:(9,0), mem_get_info=lambda i:(8*2**30, 8*2**30), get_device_name=lambda i:"fixture GPU")
+            cuda = SimpleNamespace(is_available=lambda:True, device_count=lambda:1, get_device_capability=lambda i:(9,0), mem_get_info=lambda i:(8*2**30, 8*2**30), get_device_properties=lambda i:SimpleNamespace(total_memory=8*2**30), get_device_name=lambda i:"fixture GPU")
             stack.enter_context(patch.dict("sys.modules", torch=SimpleNamespace(cuda=cuda), huggingface_hub=hub))
             for name, value in (("MODEL_PATH", None), ("MODEL_REVISION", "a"*40), ("VLLM_PREPARED", None), ("ENGINE_PROCESS", None)):
                 stack.enter_context(patch.object(server, name, value))
@@ -2806,13 +3112,13 @@ class ServingAgreementTests(unittest.TestCase):
 
 
 class BufferedRelayTests(unittest.TestCase):
-    def generate(self, value):
+    def generate(self, value, **body):
         response=Mock(status=200,read=Mock(return_value=json.dumps(value).encode()))
         connection=Mock()
         with patch.object(server,"FORMAT","gguf"), patch.object(server,"prepare_gguf",return_value=([],1,0)), \
                 patch.object(server,"llama",return_value=(connection,response)):
             try:
-                return server.generate_gguf({"messages":[{"role":"user","content":"fixture"}],"stream":False},Mock(),{})
+                return server.generate_gguf({"messages":[{"role":"user","content":"fixture"}],"stream":False,**body},Mock(),{})
             finally:
                 connection.close.assert_called_once()
                 self.assertTrue(server.GENERATION.acquire(blocking=False))
@@ -2835,6 +3141,126 @@ class BufferedRelayTests(unittest.TestCase):
             with self.assertRaisesRegex(ValueError, "This endpoint serves"):
                 server.generate_gguf({"messages": [{"role": "user", "content": "fixture"}], "stream": False, "model": "other"}, Mock(), {})
             self.assertEqual(len(sent), 3)
+
+    def test_gemma_channel_blocks_a_reply_opens_with_are_its_reasoning(self):
+        """Gemma 4 writes its thinking as <|channel>thought\\n…<channel|>, which llama.cpp leaves in
+        the content: the blocks a reply opens with become reasoning_content, the rest is the answer."""
+        for content, answer, reasoning in (("<|channel>thought\n<channel|>ready", "ready", None),
+                                           ("<|channel>thought\nplan it<channel|>\n\nDone.", "Done.", "plan it"),
+                                           ("<|channel>thought\na<channel|><|channel>thought\nb<channel|>Done.", "Done.", "ab"),
+                                           ("<|channel>thought\ncut off by the length", "", "cut off by the length"),
+                                           ("A <|channel> later is text.", "A <|channel> later is text.", None),
+                                           ("<|chan", "<|chan", None)):
+            with self.subTest(content=content):
+                status, value = self.generate({"choices": [{"index": 0, "message": {"role": "assistant", "content": content}, "finish_reason": "stop"}]})
+                message = value["choices"][0]["message"]
+                self.assertEqual((status, message["content"], message.get("reasoning_content")), (200, answer, reasoning))
+
+    def test_a_streamed_gemma_channel_block_is_reasoning_and_other_streams_pass_untouched(self):
+        def stream(pieces):
+            events = [{"choices": [{"delta": {"content": piece}, "finish_reason": None}]} for piece in pieces]
+            events.append({"choices": [{"delta": {}, "finish_reason": "stop"}], "usage": {"completion_tokens": len(pieces)}})
+            handler, meter = Mock(wfile=io.BytesIO()), {}
+            server.stream_gguf(handler, io.BytesIO(b"".join(b"data: " + json.dumps(e).encode() + b"\n\n" for e in events) + b"data: [DONE]\n\n"), 10, 30, {}, meter)
+            self.assertEqual(meter["outcome"], "ok")
+            chunks = [json.loads(line[6:]) for line in handler.wfile.getvalue().decode().splitlines() if line.startswith("data: {")]
+            self.assertEqual(chunks[-1]["choices"][0]["finish_reason"], "stop")
+            return [chunk["choices"][0]["delta"] for chunk in chunks[1:-1]]
+        # Markers cut across pieces, as a server may send them.
+        deltas = stream(["<|chan", "nel>", "thought", "\n", "plan", " it", "<channel|>", "\n", "Done", "."])
+        self.assertEqual("".join(d.get("reasoning_content", "") for d in deltas), "plan it")
+        self.assertEqual("".join(d.get("content", "") for d in deltas), "Done.")
+        self.assertEqual(stream(["<|channel>", "thought", "\n", "<channel|>", "ready"]), [{"content": "ready"}])
+        # Any other reply passes piece by piece; a start that might have been a marker waits once.
+        self.assertEqual(stream(["Hi", " <|channel>", " there"]), [{"content": "Hi"}, {"content": " <|channel>"}, {"content": " there"}])
+        self.assertEqual(stream(["<", "div>", "x"]), [{"content": "<div>"}, {"content": "x"}])
+        self.assertEqual(stream(["<|chan"]), [{"content": "<|chan"}])
+
+    # The functions the Gemma tool-call tests offer (Strix offers get_threat_model) and the call of
+    # its run with gemma-4-26B-A4B, which llama.cpp left in the text after an empty thought channel.
+    GEMMA_TOOLS = [{"type": "function", "function": {"name": name, "parameters": {"type": "object"}}} for name in ("get_threat_model", "write_file")]
+    THREAT_CALL = '<|tool_call>call:get_threat_model{target:<|"|>http://127.0.0.1:8000<|"|>}<tool_call|>'
+    THREAT = ("get_threat_model", {"target": "http://127.0.0.1:8000"})
+    WRITE_CALL = ('<|tool_call>call:write_file{path:<|"|>notes "a".txt<|"|>, meta:{<|"|>size<|"|>:-1.5e3,tags:[<|"|>x<|"|>,"y\\n\\u00e9",{deep:[]}],'
+                  'ok:true,gone:false,none:null},count:3}<tool_call|>')
+    WRITE = ("write_file", {"path": 'notes "a".txt', "meta": {"size": -1500.0, "tags": ["x", "y\né", {"deep": []}], "ok": True, "gone": False, "none": None}, "count": 3})
+    # Calls that are not converted: a function not offered, Gemma's syntax broken, a call cut off.
+    NOT_CALLS = (THREAT_CALL.replace("get_threat_model", "run_shell"), THREAT_CALL.replace('<|"|>', ""), THREAT_CALL.replace('}<', ' extra:1}<'),
+                 '<|tool_call>call:get_threat_model{target:"unterminated}<tool_call|>', '<|tool_call>call:get_threat_model{target:True}<tool_call|>',
+                 '<|tool_call>call:get_threat_model[1]<tool_call|>', '<|tool_call>call:get_threat_model{target:<|"|>x<|"|> <|x}<tool_call|>', THREAT_CALL[:-12])
+
+    def gemma_calls(self, calls, streamed=False):
+        """The (name, arguments) of structured calls, each a function call with its own server id."""
+        for index, call in enumerate(calls):
+            self.assertRegex(call["id"], r"^call_[0-9a-f]{24}$")
+            self.assertEqual((call["type"], set(call)), ("function", {"id", "type", "function", *(("index",) if streamed else ())}))
+            self.assertEqual(call.get("index"), index if streamed else None)
+        self.assertEqual(len({call["id"] for call in calls}), len(calls))
+        return [(call["function"]["name"], json.loads(call["function"]["arguments"])) for call in calls]
+
+    def test_a_gemma_tool_call_left_in_the_text_is_a_structured_call(self):
+        """llama.cpp leaves Gemma 4's <|tool_call>call:NAME{ARGS}<tool_call|> in the content when the
+        reply opens with a channel block (Strix got no call and parked its agent): a call naming an
+        offered function becomes an OpenAI tool call; the text around it stays the content."""
+        def reply(content, tools=self.GEMMA_TOOLS, **body):
+            status, value = self.generate({"choices": [{"index": 0, "message": {"role": "assistant", "content": content}, "finish_reason": "stop"}]},
+                                          **({"tools": tools} if tools else {}), **body)
+            self.assertEqual(status, 200)
+            return value["choices"][0]["message"], value["choices"][0]["finish_reason"]
+        message, finish = reply("<|channel>thought\n<channel|>" + self.THREAT_CALL)
+        self.assertEqual((message["content"], finish, "reasoning_content" in message), ("", "tool_calls", False))
+        self.assertEqual(self.gemma_calls(message["tool_calls"]), [self.THREAT])
+        # After a thought, with words before it and its string in JSON quotes.
+        message, finish = reply('<|channel>thought\nplan it<channel|>I will now initialize the threat model.  <|tool_call>call:get_threat_model{target:"http://127.0.0.1:8000"}<tool_call|>')
+        self.assertEqual((message["content"], message["reasoning_content"], finish), ("I will now initialize the threat model.  ", "plan it", "tool_calls"))
+        self.assertEqual(self.gemma_calls(message["tool_calls"]), [self.THREAT])
+        # Two calls: nested objects (keys bare or quoted) and arrays, numbers, booleans and null.
+        message, finish = reply("<|channel>thought\n<channel|>" + self.WRITE_CALL + "\n" + self.THREAT_CALL)
+        self.assertEqual((message["content"], finish), ("", "tool_calls"))
+        self.assertEqual(self.gemma_calls(message["tool_calls"]), [self.WRITE, self.THREAT])
+        # Anything else is the text exactly as before, with the channel block still its reasoning.
+        for text, tools, body in [*((text, self.GEMMA_TOOLS, {}) for text in self.NOT_CALLS),
+                                  (self.THREAT_CALL, None, {}), (self.THREAT_CALL, self.GEMMA_TOOLS, {"tool_choice": "none"})]:
+            with self.subTest(text=text, tools=bool(tools), body=body):
+                message, finish = reply("<|channel>thought\nplan it<channel|>" + text, tools, **body)
+                self.assertEqual((message, finish), ({"role": "assistant", "content": text, "reasoning_content": "plan it"}, "stop"))
+        # A reply llama.cpp returned structured is left as it came.
+        structured = {"role": "assistant", "content": self.THREAT_CALL, "tool_calls": [{"id": "a", "type": "function", "function": {"name": "write_file", "arguments": "{}"}}]}
+        status, value = self.generate({"choices": [{"index": 0, "message": dict(structured), "finish_reason": "tool_calls"}]}, tools=self.GEMMA_TOOLS)
+        self.assertEqual(value["choices"][0]["message"], structured)
+
+    def stream_reply(self, pieces, names=(), trace=None):
+        """What stream_gguf sends for these content pieces: the content, the tool calls, the finish reason."""
+        events = [{"choices": [{"delta": {"content": piece}, "finish_reason": None}]} for piece in pieces]
+        events.append({"choices": [{"delta": {}, "finish_reason": "stop"}], "usage": {"completion_tokens": len(pieces)}})
+        handler, meter = Mock(wfile=io.BytesIO()), {}
+        server.stream_gguf(handler, io.BytesIO(b"".join(b"data: " + json.dumps(e).encode() + b"\n\n" for e in events) + b"data: [DONE]\n\n"), 10, 30, {}, meter, trace, names=names)
+        self.assertEqual(meter["outcome"], "ok")
+        chunks = [json.loads(line[6:]) for line in handler.wfile.getvalue().decode().splitlines() if line.startswith("data: {")]
+        deltas = [chunk["choices"][0]["delta"] for chunk in chunks[1:-1]]
+        return "".join(d.get("content", "") for d in deltas), [call for d in deltas for call in d.get("tool_calls", ())], chunks[-1]["choices"][0]["finish_reason"]
+
+    def test_a_streamed_gemma_tool_call_left_in_the_text_is_a_structured_call(self):
+        names = {"get_threat_model", "write_file"}
+        # Markers cut across pieces: the text that may still become a call waits.
+        content, calls, finish = self.stream_reply(["<|chan", "nel>thought\n", "<channel|>", "<|tool", "_call>call:get_", "threat_model{target:<|\"",
+                                                    "|>http://127.0.0.1:8000<|\"|>}<tool", "_call|>"], names)
+        self.assertEqual((content, finish), ("", "tool_calls"))
+        self.assertEqual(self.gemma_calls(calls, streamed=True), [self.THREAT])
+        # Many small pieces: words, then two calls, each one tool_call delta of its own index.
+        text = "<|channel>thought\nplan<channel|>I will.  " + self.WRITE_CALL + "\n" + self.THREAT_CALL
+        content, calls, finish = self.stream_reply([text[at:at + 2] for at in range(0, len(text), 2)], names)
+        self.assertEqual((content, finish), ("I will.  \n", "tool_calls"))
+        self.assertEqual(self.gemma_calls(calls, streamed=True), [self.WRITE, self.THREAT])
+        # Anything else streams as the text it was; so does every call when no tools were offered.
+        for text, offered in [*((text, names) for text in self.NOT_CALLS), (self.THREAT_CALL, ())]:
+            with self.subTest(text=text, offered=bool(offered)):
+                self.assertEqual(self.stream_reply(["<|channel>thought\n<channel|>"] + [text[at:at + 3] for at in range(0, len(text), 3)], offered), (text, [], "stop"))
+        # A converted reply has no proven byte map for the token trace; text passed through keeps it.
+        for pieces, valid in ((["Calling.", self.THREAT_CALL[:20], self.THREAT_CALL[20:]], False), (["Hi", " <", "|tool"], True)):
+            trace = Mock(start=0, valid=True)
+            self.stream_reply(pieces, names, trace)
+            self.assertIs(trace.valid, valid)
 
     def test_a_json_reply_format_is_forwarded_to_the_backend_and_refused_where_nothing_enforces_it(self):
         """response_format reaches llama.cpp and vLLM as given (they enforce it); a text format
@@ -2878,6 +3304,53 @@ class BufferedRelayTests(unittest.TestCase):
         self.assertEqual(status,200)
         self.assertEqual(value["choices"][0]["message"],message)
         self.assertEqual(value["choices"][0]["finish_reason"],"length")
+
+    def test_vllms_empty_tool_calls_never_leave_and_its_reply_can_be_sent_back(self):
+        """vLLM answers plain text with "tool_calls": [] and null refusal and reasoning. The reply
+        leaves without the empty list, as the stream's does, and a client that sends the reply back
+        as it came (OpenAI SDK: messages.append(reply.choices[0].message)) is answered on runners
+        with and without tool calling."""
+        message = {"role": "assistant", "content": "fixture", "tool_calls": [], "function_call": None, "refusal": None, "reasoning_content": None}
+        status, value = self.generate({"choices": [{"index": 0, "message": dict(message), "finish_reason": "stop"}]})
+        self.assertEqual(status, 200)
+        replied = value["choices"][0]["message"]
+        self.assertEqual(replied, {"role": "assistant", "content": "fixture", "function_call": None, "refusal": None, "reasoning_content": None})
+        for fmt, parser in (("vllm", ""), ("vllm", "hermes"), ("gguf", "")):
+            for returned in (replied, message, {**message, "tool_calls": None}):
+                with self.subTest(fmt=fmt, parser=parser, returned=returned), patch.object(server, "FORMAT", fmt), patch.object(server, "TOOL_PARSER", parser):
+                    messages = server.validate_chat({"messages": [{"role": "user", "content": "hi"}, dict(returned), {"role": "user", "content": "again"}]})[0]
+                    self.assertEqual(messages[1], {"role": "assistant", "content": "fixture"})
+
+    def test_a_default_reply_length_takes_what_the_context_leaves(self):
+        """The agent API's 4096-token default on a vLLM model whose context is 4096 tokens: a request
+        without max_tokens gets the room its prompt leaves and keeps every turn under truncate; only
+        a prompt that fills the context, or a max_tokens the caller set, is refused."""
+        reply = {"choices": [{"index": 0, "message": {"role": "assistant", "content": "fixture"}, "finish_reason": "length"}]}
+        sent = []
+
+        def llama(path, request, timeout=30, caller=None, holder=None):
+            sent.append(request)
+            return Mock(), Mock(status=200, read=Mock(return_value=json.dumps(reply).encode()))
+        user, assistant = (lambda text: {"role": "user", "content": text}), (lambda text: {"role": "assistant", "content": text})
+        with patch.object(server, "FORMAT", "vllm"), patch.object(server, "llama", llama), patch.dict(server.LLAMA, context=4096), \
+             patch.object(server, "llama_json", side_effect=lambda path, request: {"count": 1000 * len(request["messages"])}), \
+             patch.dict(os.environ, {"YOUGORI_MODEL_AGENT_API": "1"}):
+            chat = lambda messages, **extra: server.generate_gguf({"messages": messages, "stream": False, **extra}, Mock(), {})
+            status, value = chat([user("fixture")])
+            self.assertEqual((status, sent[-1]["max_tokens"]), (200, 3096))
+            # Under truncate the oldest turns go until a default-length reply has up to half the
+            # context: a reply cut to the few tokens a full conversation leaves is no answer.
+            status, value = chat([user("a"), assistant("b"), user("c")], truncate=True)
+            self.assertEqual((status, sent[-1]["max_tokens"], len(sent[-1]["messages"]), value["usage"]["truncated_messages"]), (200, 3096, 1, 2))
+            # An agent's own reply length that the context cannot also hold is cut to what it leaves
+            # (Strix asked 8,192 of a 32,768-token model over a 29,000-token prompt and was refused).
+            for asked in (4096, 3500):
+                with self.subTest(asked=asked):
+                    status, value = chat([user("fixture")], max_tokens=asked)
+                    self.assertEqual((status, sent[-1]["max_tokens"]), (200, 3096))
+            with self.assertRaises(server.ContextRefusal):
+                chat([user("a"), assistant("b"), user("c"), assistant("d"), user("e")])
+        self.assertEqual(len(sent), 4, "nothing reached vLLM after a refusal")
 
     def test_never_invents_role_index_or_finish_from_a_broken_backend(self):
         good={"index":0,"message":{"role":"assistant","content":"fixture"},"finish_reason":"stop"}

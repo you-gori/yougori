@@ -1,0 +1,25 @@
+---
+source: src/ui/tests.rs
+expression: narrow
+---
+
+  ▀▄ ▄▀ ▄▀▀▄ █  █ ▄▀▀▀ ▄▀▀▄ █▀▀▄ ▀█▀
+    █   █  █ █  █ █ ▀█ █  █ █▀█   █     OpenCode  v1.0.0
+    ▀    ▀▀   ▀▀   ▀▀▀  ▀▀  ▀  ▀ ▀▀▀    qwen3-coder-30b
+
+  OpenCode 1.0 · build mode
+
+› Go
+
+  ■ OpenCode stopped: OpenCode crashed: out of memory while
+    loading the session
+
+
+
+
+
+■  OpenCode stopped
+│  OpenCode crashed: out of memory while loading the session
+└  q quit · enter start again · ctrl+p model
+ ■ stopped · OpenCode · qwen3-coder-30b · Build
+[no cursor]

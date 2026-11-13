@@ -1,0 +1,25 @@
+---
+source: src/ui/tests.rs
+expression: text
+---
+ Yougori  Aider · qwen3-coder-30b            running 1m 15s
+Aider v0.86
+Model: qwen3-coder-30b
+Repo: /workspace (12 files)
+
+>  add a health check, password •••••••••••••
+Applied edit to app.py
+>
+
+
+
+
+
+
+
+
+
+
+
+ reaches only the inference · ctrl+p commands · shift+pgup …
+[no cursor]

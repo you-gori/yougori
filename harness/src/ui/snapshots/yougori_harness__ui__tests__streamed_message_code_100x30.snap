@@ -1,0 +1,35 @@
+---
+source: src/ui/tests.rs
+expression: wide
+---
+
+  ▀▄ ▄▀ ▄▀▀▄ █  █ ▄▀▀▀ ▄▀▀▄ █▀▀▄ ▀█▀
+    █   █  █ █  █ █ ▀█ █  █ █▀█   █     OpenCode  v1.0.0
+    ▀    ▀▀   ▀▀   ▀▀▀  ▀▀  ▀  ▀ ▀▀▀    qwen3-coder-30b
+
+  OpenCode 1.0 · build mode
+
+› Show me how to read a file in Rust
+
+  Use std::fs::read_to_string:
+
+    use std::fs;
+
+    fn main() -> std::io::Result<()> {
+        let text = fs::read_to_string("notes.txt")?;
+        println!("{text}");
+        Ok(())
+    }
+
+  It returns an error when the file is missing.
+
+
+
+
+
+
+╭──────────────────────────────────────────────────────────────────────────────────────────────────╮
+│ › Ask OpenCode anything                                                                          │
+╰──────────────────────────────────────────────────────────────────────────────────────────────────╯
+ ⠹ 3.2s · esc to stop · OpenCode · qwen3-coder-30b · 10% context · Build
+[cursor 4,27]

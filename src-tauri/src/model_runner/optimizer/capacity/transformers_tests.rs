@@ -323,7 +323,7 @@ fn a_transformers_demand_is_reserved_exactly_and_vllm_keeps_its_ninety_percent()
     let s = sample(GIB);
     let key = ResourceKey::vram(s.device);
     let (_, mut a) = world(&s);
-    a.settle_and_admit(&s, "model", Some(transformers(3 * GIB)))
+    a.settle_and_admit(&s, "model", Some(transformers(3 * GIB)), None)
         .unwrap();
     books(&a, &s, 3 * GIB);
     let root = a.roots[0];
@@ -344,7 +344,7 @@ fn a_transformers_demand_is_reserved_exactly_and_vllm_keeps_its_ninety_percent()
     for bytes in [GIB, 22 * GIB] {
         let (_, mut typed) = world(&s);
         typed
-            .settle_and_admit(&s, "model", Some(Demand::vllm(bytes)))
+            .settle_and_admit(&s, "model", Some(Demand::vllm(bytes)), None)
             .unwrap();
         let (_, mut legacy) = world(&s);
         legacy.settle_and_reserve(&s, "model", Some(bytes)).unwrap();
@@ -360,7 +360,7 @@ async fn a_demand_that_does_not_fit_beside_unmanaged_use_is_refused_with_the_exi
     // Exactly what is left beside the probe's used bytes is granted.
     let fits = sample(24 * GIB - RESERVE - 3 * GIB);
     let (_, mut a) = world(&fits);
-    a.settle_and_admit(&fits, "model", Some(demand)).unwrap();
+    a.settle_and_admit(&fits, "model", Some(demand), None).unwrap();
     books(&a, &fits, 3 * GIB);
     // One byte more in use and the same demand is refused, with nothing held, sent or
     // persisted.
@@ -388,7 +388,7 @@ async fn a_demand_that_does_not_fit_beside_unmanaged_use_is_refused_with_the_exi
         &send,
         || async { Ok(full.clone()) },
         |_, _| panic!("a refused demand persists no grant marker"),
-        |probe, demand| a.lock().unwrap().settle_and_admit(probe, "target", demand),
+        |probe, demand| a.lock().unwrap().settle_and_admit(probe, "target", demand, None),
     )
     .await
     .unwrap_err();
@@ -466,7 +466,7 @@ async fn repeated_grant_cancel_and_release_cycles_leave_no_reservation_and_never
                     }
                     Ok(())
                 },
-                |probe, demand| a.lock().unwrap().settle_and_admit(probe, "target", demand),
+                |probe, demand| a.lock().unwrap().settle_and_admit(probe, "target", demand, None),
             )
             .await;
             assert_eq!(result.is_ok(), !cancelled, "round {round}: {result:?}");
@@ -491,7 +491,7 @@ async fn repeated_grant_cancel_and_release_cycles_leave_no_reservation_and_never
                         &CancellationToken::new(),
                         || async { Ok(sample(GIB)) },
                         persist,
-                        |probe, _| a.lock().unwrap().settle_and_admit(probe, "idle", None),
+                        |probe, _| a.lock().unwrap().settle_and_admit(probe, "idle", None, None),
                     )
                     .await
                 }

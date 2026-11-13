@@ -294,6 +294,21 @@ impl RuntimeManager {
             .await?;
         self.cuda_capacity().await
     }
+    /// Asks WSL 2 to give back its clean page cache, which holds model weights and image layers
+    /// as WSL's own memory that a VM launch cannot use. One running runtime is enough: every WSL 2
+    /// distribution shares one kernel. A stopped runtime is never started for it. Whether a
+    /// running runtime took the request.
+    pub async fn reclaim_wsl_page_cache(&self) -> bool {
+        if self.cuda.reclaim_page_cache().await.unwrap_or(false) {
+            return true;
+        }
+        for engine in self.loaded_storage_runtimes() {
+            if engine.cuda.reclaim_page_cache().await.unwrap_or(false) {
+                return true;
+            }
+        }
+        false
+    }
     pub async fn cuda_capacity(&self) -> Result<(f64, f64), String> {
         let mut capacities = Vec::new();
         if let Ok(capacity) = self.local_cuda_capacity().await { capacities.push(capacity); }
